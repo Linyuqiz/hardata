@@ -1,0 +1,12 @@
+# WASM 性能配置
+# 注意：SIMD 与 wasm-opt 有兼容性问题，暂时禁用
+
+[build]
+target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+    # 启用 WASM 特性（不包含 SIMD，避免 wasm-opt 兼容性问题）
+    "-C", "target-feature=+bulk-memory",    # 批量内存操作
+    "-C", "target-feature=+mutable-globals",# 可变全局变量
+]

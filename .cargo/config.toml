@@ -1,0 +1,26 @@
+# CPU 特定优化配置
+
+[build]
+# 为当前 CPU 启用所有可用指令集（AVX2, AVX-512, SSE4.2 等）
+rustflags = [
+    "-C", "target-cpu=native",           # 使用本机 CPU 的所有特性
+    "-C", "target-feature=+crt-static",  # 静态链接 C 运行时
+]
+
+# 特定于 release 构建的优化
+[profile.release]
+# 这些设置在 Cargo.toml 中已定义，这里仅作参考
+
+# macOS 特定优化（你的环境）
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "link-arg=-fuse-ld=lld",       # 使用 LLD 链接器（更快）
+]
+
+# Linux 特定优化
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C", "target-cpu=x86-64-v3",
+    "-C", "link-arg=-fuse-ld=lld",
+]

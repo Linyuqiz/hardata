@@ -1,0 +1,22 @@
+# HarData 配置文件
+sync:
+  # HTTP API
+  http_bind: "0.0.0.0:9080"
+  # 数据目录
+  data_dir: "./data/sync"
+  # 是否启用 Web UI
+  web_ui: true
+  # 区域配置列表
+  regions:
+    # 本地区域
+    - name: "local"
+      quic_bind: "127.0.0.1:9443"
+      tcp_bind: "127.0.0.1:9444"
+
+agent:
+  # QUIC 监听地址
+  quic_bind: "0.0.0.0:9443"
+  # TCP 监听地址
+  tcp_bind: "0.0.0.0:9444"
+  # 数据根目录
+  data_dir: "./data/agent"

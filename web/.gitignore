@@ -1,0 +1,11 @@
+# Rust 编译产物
+target/
+
+# Dioxus 构建产物
+dist/
+
+# 调试文件
+*.log
+*.swp
+*.swo
+*~

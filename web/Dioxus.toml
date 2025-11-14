@@ -1,0 +1,28 @@
+[application]
+name = "hardata-web"
+default_platform = "web"
+
+[web.app]
+title = "HarData Dashboard"
+base_path = "/"
+out_dir = "dist"
+
+# 静态资源目录配置
+[web.resource]
+# 不使用 Dioxus 自动注入样式，CSS 已在 index.html 中引用
+style = []
+
+[web.resource.dev]
+# 开发模式下监听 assets 目录
+watch_path = ["assets"]
+
+[web.watcher]
+watch_path = ["src", "assets"]
+index_on_404 = true
+
+# WASM 优化配置
+[web.wasm-opt]
+# 禁用 wasm-opt（我们已经有 LTO 了）
+# wasm-opt 与 SIMD 有兼容性问题，且主要是体积优化
+# 性能优化已通过 opt-level=3 + lto=fat 实现
+level = 0  # 禁用 wasm-opt

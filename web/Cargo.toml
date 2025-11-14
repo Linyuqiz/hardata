@@ -1,0 +1,31 @@
+[package]
+name = "hardata-web"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { version = "0.7", features = ["web"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "HtmlElement",
+    "EventSource",
+    "MessageEvent",
+] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-net = "0.6"
+
+[profile.release]
+opt-level = 3           # 性能最大化
+lto = "fat"             # 完整 LTO
+codegen-units = 1       # 单代码生成单元
+# strip = true          # 禁用，避免移除 manganis 资源
+panic = 'abort'         # panic 直接终止
+overflow-checks = false # 禁用溢出检查（提升性能）
+incremental = false     # 禁用增量编译
+debug = false           # 禁用调试信息
+debug-assertions = false # 禁用调试断言
