@@ -54,6 +54,7 @@ pub async fn check_deduplication(
                 connection,
                 file,
                 dest_path,
+                cdc_result.mtime,
                 prefetch_manager,
             )
             .await?;

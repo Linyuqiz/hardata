@@ -1,4 +1,5 @@
 use crate::util::error::{HarDataError, Result};
+use crate::util::time::timestamps_match;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
@@ -54,7 +55,7 @@ impl CDCResultCache {
                     HarDataError::InvalidConfig(format!("Failed to deserialize cache: {}", e))
                 })?;
 
-                if cache.mtime == current_mtime && cache.size == current_size {
+                if timestamps_match(cache.mtime, current_mtime) && cache.size == current_size {
                     self.cache_hits
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     debug!(
@@ -132,5 +133,74 @@ impl CDCResultCache {
             .map_err(|e| HarDataError::InvalidConfig(format!("Failed to flush cache: {}", e)))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CDCResultCache, ChunkInfo, FileChunkCache};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hardata-cdc-cache-{label}-{unique}"));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn cache_distinguishes_subsecond_mtime_changes() {
+        let dir = temp_dir("mtime-nanos");
+        let cache = CDCResultCache::new(&dir).unwrap();
+        let entry = FileChunkCache {
+            mtime: 1_700_000_000_000_000_001,
+            size: 16,
+            chunks: vec![ChunkInfo {
+                offset: 0,
+                size: 16,
+                strong_hash: Some([1; 32]),
+                weak_hash: 11,
+            }],
+        };
+        cache.put("file.bin", entry).unwrap();
+
+        assert!(cache
+            .get("file.bin", 1_700_000_000_000_000_001, 16)
+            .unwrap()
+            .is_some());
+        assert!(cache
+            .get("file.bin", 1_700_000_000_000_000_002, 16)
+            .unwrap()
+            .is_none());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cache_accepts_legacy_second_precision_entries() {
+        let dir = temp_dir("mtime-legacy-seconds");
+        let cache = CDCResultCache::new(&dir).unwrap();
+        let entry = FileChunkCache {
+            mtime: 1_700_000_000,
+            size: 16,
+            chunks: vec![ChunkInfo {
+                offset: 0,
+                size: 16,
+                strong_hash: Some([3; 32]),
+                weak_hash: 12,
+            }],
+        };
+        cache.put("file.bin", entry).unwrap();
+
+        assert!(cache
+            .get("file.bin", 1_700_000_000_123_456_789, 16)
+            .unwrap()
+            .is_some());
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

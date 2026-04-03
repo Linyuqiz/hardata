@@ -64,7 +64,19 @@ impl ChunkIndex {
     }
 
     pub fn cleanup_stale_entries(&self) -> Result<usize> {
-        cleanup::cleanup_stale_entries(&self.weak_hash_tree, &self.strong_hash_tree)
+        cleanup::cleanup_stale_entries(
+            &self.weak_hash_tree,
+            &self.strong_hash_tree,
+            &self.file_scans_tree,
+        )
+    }
+
+    pub fn cleanup_stale_file_scans(&self) -> Result<usize> {
+        cleanup::cleanup_stale_file_scans(
+            &self.weak_hash_tree,
+            &self.strong_hash_tree,
+            &self.file_scans_tree,
+        )
     }
 
     pub fn clear(&self) -> Result<usize> {
@@ -146,5 +158,48 @@ impl ChunkIndex {
         })?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChunkIndex;
+    use crate::sync::engine::ChunkInfo;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hardata-chunk-index-{label}-{unique}"));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn should_reindex_when_only_subsecond_mtime_changes() {
+        let dir = temp_dir("mtime-nanos");
+        let index = ChunkIndex::new(&dir).unwrap();
+        let chunks = vec![ChunkInfo {
+            offset: 0,
+            size: 4,
+            strong_hash: Some([2; 32]),
+            weak_hash: 22,
+        }];
+
+        index
+            .batch_insert_chunks("file.bin", &chunks, 1_700_000_000_000_000_001, 4)
+            .unwrap();
+
+        assert!(!index
+            .should_reindex_file("file.bin", 1_700_000_000_000_000_001, 4)
+            .unwrap());
+        assert!(index
+            .should_reindex_file("file.bin", 1_700_000_000_000_000_999, 4)
+            .unwrap());
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

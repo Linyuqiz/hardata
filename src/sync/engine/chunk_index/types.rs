@@ -16,6 +16,8 @@ pub struct FileScanMetadata {
     pub size: u64,
     pub chunk_count: usize,
     pub last_indexed: i64,
+    pub weak_hashes: Vec<u64>,
+    pub strong_hashes: Vec<[u8; 32]>,
 }
 
 #[derive(Debug, Clone)]

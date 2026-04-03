@@ -1,4 +1,5 @@
 use crate::util::error::{HarDataError, Result};
+use crate::util::time::{metadata_ctime_nanos, metadata_inode, metadata_mtime_nanos};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -16,12 +17,7 @@ impl ComputeService {
     ) -> Result<(u64, Arc<Vec<crate::core::ChunkMetadata>>)> {
         use crate::util::cdc::{StreamingFastCDC, StreamingFastCDCConfig};
 
-        if !target_file_path.exists() {
-            return Err(HarDataError::FileOperation(format!(
-                "File not found: {:?}",
-                target_file_path
-            )));
-        }
+        Self::ensure_regular_file(target_file_path).await?;
 
         let metadata = tokio::fs::metadata(target_file_path)
             .await
@@ -44,7 +40,11 @@ impl ComputeService {
 
                 let age_secs = now.saturating_sub(entry.created_at);
                 let ttl_expired = age_secs > super::types::CACHE_TTL_SECS;
-                let file_modified = entry.mtime != current_mtime || entry.file_size != file_size;
+                let file_modified = entry.mtime != current_mtime
+                    || entry.file_size != file_size
+                    || entry.min_chunk_size != min_chunk_size
+                    || entry.avg_chunk_size != avg_chunk_size
+                    || entry.max_chunk_size != max_chunk_size;
 
                 if !ttl_expired && !file_modified {
                     entry.last_access = now;
@@ -109,6 +109,9 @@ impl ComputeService {
             CacheEntry {
                 mtime: current_mtime,
                 file_size,
+                min_chunk_size,
+                avg_chunk_size,
+                max_chunk_size,
                 chunks: Arc::clone(&chunks_arc),
                 created_at: now,
                 last_access: now,
@@ -126,11 +129,41 @@ impl ComputeService {
     ) -> Result<Vec<crate::core::FileInfo>> {
         use tokio::fs;
 
-        if !directory_path.exists() {
-            return Err(HarDataError::FileOperation(format!(
-                "Path does not exist: {:?}",
-                directory_path
-            )));
+        let root_symlink_metadata = fs::symlink_metadata(directory_path).await.map_err(|e| {
+            HarDataError::FileOperation(format!("Failed to read root path metadata: {}", e))
+        })?;
+        if root_symlink_metadata.file_type().is_symlink() {
+            let file_name = directory_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let modified = metadata_mtime_nanos(&root_symlink_metadata);
+            let symlink_target = fs::read_link(directory_path)
+                .await
+                .ok()
+                .map(|p| p.to_string_lossy().to_string());
+
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::MetadataExt;
+                root_symlink_metadata.mode()
+            };
+            #[cfg(not(unix))]
+            let mode = 0u32;
+
+            info!("Root symlink path detected: {:?}", directory_path);
+            return Ok(vec![crate::core::FileInfo {
+                path: file_name,
+                size: root_symlink_metadata.len(),
+                is_directory: false,
+                modified,
+                change_time: metadata_ctime_nanos(&root_symlink_metadata),
+                inode: metadata_inode(&root_symlink_metadata),
+                mode,
+                is_symlink: true,
+                symlink_target,
+            }]);
         }
 
         if directory_path.is_file() {
@@ -144,12 +177,7 @@ impl ComputeService {
                 .unwrap_or("")
                 .to_string();
 
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
+            let modified = metadata_mtime_nanos(&metadata);
 
             #[cfg(unix)]
             let mode = {
@@ -165,6 +193,8 @@ impl ComputeService {
                 size: metadata.len(),
                 is_directory: false,
                 modified,
+                change_time: metadata_ctime_nanos(&metadata),
+                inode: metadata_inode(&metadata),
                 mode,
                 is_symlink: false,
                 symlink_target: None,
@@ -211,12 +241,7 @@ impl ComputeService {
                 .to_string_lossy()
                 .to_string();
 
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
+            let modified = metadata_mtime_nanos(&metadata);
 
             #[cfg(unix)]
             let mode = {
@@ -231,6 +256,8 @@ impl ComputeService {
                 size: metadata.len(),
                 is_directory: metadata.is_dir(),
                 modified,
+                change_time: metadata_ctime_nanos(&metadata),
+                inode: metadata_inode(&metadata),
                 mode,
                 is_symlink,
                 symlink_target,
@@ -254,12 +281,7 @@ impl ComputeService {
     ) -> Result<Vec<u8>> {
         use crate::util::handle_pool::acquire_file_handle;
 
-        if !file_path.exists() {
-            return Err(HarDataError::FileOperation(format!(
-                "File does not exist: {:?}",
-                file_path
-            )));
-        }
+        Self::ensure_regular_file(file_path).await?;
 
         let mut handle = acquire_file_handle(file_path)
             .await
@@ -271,5 +293,164 @@ impl ComputeService {
             .map_err(|e| HarDataError::FileOperation(format!("Failed to read: {}", e)))?;
 
         Ok(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ComputeService;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hardata-agent-file-ops-{name}-{unique}"));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_directory_returns_root_symlink_as_single_entry() {
+        let root = temp_dir("root-symlink");
+        let target = root.join("target.txt");
+        let link = root.join("link.txt");
+        std::fs::write(&target, b"payload").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let compute = ComputeService::new(root.to_str().unwrap()).await.unwrap();
+        let files = compute.list_directory(&link).await.unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "link.txt");
+        assert!(files[0].is_symlink);
+        assert!(!files[0].is_directory);
+        assert!(files[0]
+            .symlink_target
+            .as_ref()
+            .is_some_and(|target| target.ends_with("target.txt")));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_directory_returns_root_symlink_directory_as_single_entry() {
+        let root = temp_dir("root-symlink-dir");
+        let target = root.join("target-dir");
+        let link = root.join("link-dir");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("file.txt"), b"payload").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let compute = ComputeService::new(root.to_str().unwrap()).await.unwrap();
+        let files = compute.list_directory(&link).await.unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "link-dir");
+        assert!(files[0].is_symlink);
+        assert!(!files[0].is_directory);
+        assert!(files[0]
+            .symlink_target
+            .as_ref()
+            .is_some_and(|target| target.ends_with("target-dir")));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_directory_returns_broken_root_symlink_as_single_entry() {
+        let root = temp_dir("root-broken-symlink");
+        let link = root.join("broken-link.txt");
+        std::os::unix::fs::symlink("missing.txt", &link).unwrap();
+
+        let compute = ComputeService::new(root.to_str().unwrap()).await.unwrap();
+        let files = compute.list_directory(&link).await.unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "broken-link.txt");
+        assert!(files[0].is_symlink);
+        assert!(!files[0].is_directory);
+        assert_eq!(files[0].symlink_target.as_deref(), Some("missing.txt"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn get_file_hashes_rejects_symlink_paths() {
+        let root = temp_dir("hash-symlink");
+        let outside = temp_dir("hash-symlink-outside");
+        let target = outside.join("secret.txt");
+        let link = root.join("secret-link.txt");
+        std::fs::write(&target, b"secret").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let compute = ComputeService::new(root.to_str().unwrap()).await.unwrap();
+        let err = compute
+            .get_file_hashes(&link, 1024, 2048, 4096)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Refusing to read symlink path"));
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_block_by_offset_rejects_symlink_paths() {
+        let root = temp_dir("read-symlink");
+        let outside = temp_dir("read-symlink-outside");
+        let target = outside.join("secret.txt");
+        let link = root.join("secret-link.txt");
+        std::fs::write(&target, b"secret").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let compute = ComputeService::new(root.to_str().unwrap()).await.unwrap();
+        let err = compute.read_block_by_offset(&link, 0, 4).await.unwrap_err();
+
+        assert!(err.to_string().contains("Refusing to read symlink path"));
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[tokio::test]
+    async fn get_file_hashes_cache_misses_when_chunk_profile_changes() {
+        let root = temp_dir("hash-cache-profile");
+        let file = root.join("payload.bin");
+        let payload: Vec<u8> = (0..64 * 1024).map(|idx| (idx % 251) as u8).collect();
+        std::fs::write(&file, payload).unwrap();
+
+        let compute = ComputeService::new(root.to_str().unwrap()).await.unwrap();
+
+        compute
+            .get_file_hashes(&file, 1024, 2048, 4096)
+            .await
+            .unwrap();
+        let (hits, misses, entries) = compute.cache_stats();
+        assert_eq!((hits, misses, entries), (0, 1, 1));
+
+        compute
+            .get_file_hashes(&file, 1024, 2048, 4096)
+            .await
+            .unwrap();
+        let (hits, misses, entries) = compute.cache_stats();
+        assert_eq!((hits, misses, entries), (1, 1, 1));
+
+        compute
+            .get_file_hashes(&file, 2048, 4096, 8192)
+            .await
+            .unwrap();
+        let (hits, misses, entries) = compute.cache_stats();
+        assert_eq!((hits, misses, entries), (1, 2, 1));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

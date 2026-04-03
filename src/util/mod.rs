@@ -5,4 +5,6 @@ pub mod error;
 pub mod file_ops;
 pub mod handle_pool;
 pub mod retry;
+pub mod time;
+pub mod signal;
 pub mod zero_copy;

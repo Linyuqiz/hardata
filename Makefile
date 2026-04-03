@@ -12,32 +12,31 @@ build-release:
 	cargo build --release
 	@echo "构建完成: ./target/release/hardata"
 
-# Linux 生产环境
+# Linux 生产环境（本机 Linux 构建，优化参数由 .cargo/config.toml 统一管理）
 build-linux-optimized:
-	@echo "Linux 生产环境完整优化构建 (pread/pwrite + sendfile + SIMD)..."
-	@echo "注意: 使用 Linux 系统调用优化"
-	RUSTFLAGS="-C target-cpu=native -C opt-level=3" \
+	@echo "Linux 生产环境构建 (io-uring + SIMD)..."
 	cargo build --release --features io-uring
 	@echo "构建完成: ./target/release/hardata"
 
-# macOS 优化构建
+# Linux 交叉编译（macOS → Linux x86_64，需要 cargo-zigbuild）
+build-linux-cross:
+	@echo "交叉编译 Linux x86_64 (io-uring + SIMD)..."
+	cargo zigbuild --release --target x86_64-unknown-linux-gnu --features io-uring
+	@echo "构建完成: ./target/x86_64-unknown-linux-gnu/release/hardata"
+
+# macOS 优化构建（优化参数由 .cargo/config.toml 统一管理）
 build-macos-optimized:
-	@echo "macOS 优化构建 (SIMD + Buffer Pool)..."
-	@echo "注意: Linux 优化 I/O 在 macOS 上不可用"
-	RUSTFLAGS="-C target-cpu=native -C opt-level=3" \
+	@echo "macOS 优化构建 (SIMD + native CPU)..."
 	cargo build --release
 	@echo "构建完成: ./target/release/hardata"
 
 # 前端构建
 build-web:
 	@echo "前端构建 (Dioxus WASM)..."
-	@echo "清理旧的 web 构建产物..."
 	rm -rf web/dist web/target
 	mkdir -p web/dist
 	cd web && dx build --release
-	@echo "复制构建产物到 web/dist..."
 	cp -r web/target/dx/hardata-web/release/web/public/* web/dist/
-	@echo "复制 assets 静态资源..."
 	cp -r web/assets/* web/dist/assets/ 2>/dev/null || true
 	@echo "构建完成: ./web/dist/"
 
@@ -49,6 +48,26 @@ build-all: build-web build-release
 build-all-macos: build-web build-macos-optimized
 	@echo "全量 macOS 优化构建完成"
 
-# 全量优化构建 (前端 + 后端 Linux)
+# 全量优化构建 (前端 + 后端 Linux 本机)
 build-all-linux: build-web build-linux-optimized
 	@echo "全量 Linux 优化构建完成"
+
+# 全量交叉编译 (前端 + macOS → Linux x86_64)
+build-all-linux-cross: build-web build-linux-cross
+	@echo "全量 Linux 交叉编译完成: ./target/x86_64-unknown-linux-gnu/release/hardata"
+
+# 清理构建产物
+clean:
+	cargo clean
+	rm -rf web/dist web/target
+	@echo "清理完成"
+
+# 本地回环性能基准
+perf-loopback:
+	@echo "执行本地回环性能基准 (TCP + QUIC)..."
+	python3 scripts/perf_loopback.py
+
+# 生产侧补充压测
+perf-stress:
+	@echo "执行小文件与并发补充压测 (TCP + QUIC)..."
+	python3 scripts/perf_stress.py

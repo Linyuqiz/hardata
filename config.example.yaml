@@ -1,21 +1,34 @@
 # HarData 配置文件
 sync:
   # HTTP API
-  http_bind: "0.0.0.0:9080"
+  http_bind: "127.0.0.1:9080"
   # 数据目录
   data_dir: "./data/sync"
+  # 是否允许任务写到 data_dir 之外，生产环境建议保持 false
+  allow_external_destinations: false
+  # 回环地址本地联调默认不开启鉴权（留空即可）；当 HTTP 对外暴露时必须配置安全的随机 Bearer Token
+  api_token: ""
   # 是否启用 Web UI
   web_ui: true
+  # sync 非最终轮的稳定性等待秒数，文件修改后需稳定超过该值才会进入增量同步
+  stability_threshold_secs: 20
+  # 文件落盘模式，生产环境建议保持 tmp
+  replicate_mode: tmp
   # 区域配置列表
   regions:
     # 本地区域
     - name: "local"
+      # QUIC 地址，自动从 IP 查找 .hardata/tls/agent-cert-{ip}.der 证书
       quic_bind: "127.0.0.1:9443"
       tcp_bind: "127.0.0.1:9444"
 
 agent:
   # QUIC 监听地址
   quic_bind: "0.0.0.0:9443"
+  # 证书 SAN 主机名，填写 Agent 的实际 IP 或域名
+  # 证书生成在 .hardata/tls/agent-cert-{第一个hostname}.der
+  quic_cert_hostnames:
+    - "127.0.0.1"
   # TCP 监听地址
   tcp_bind: "0.0.0.0:9444"
   # 数据根目录

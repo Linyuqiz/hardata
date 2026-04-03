@@ -12,6 +12,40 @@ pub struct ChunkClassification {
     pub skipped_bytes: u64,
 }
 
+enum LocalReuseDecision {
+    InPlace,
+    Relocate { offset: u64, length: usize },
+    Copy(ChunkLocation),
+}
+
+fn select_local_reuse(
+    strong_hash: [u8; 32],
+    dest_offset: u64,
+    local_chunk_info: &LocalChunkInfo,
+    dest_path: &str,
+) -> Option<LocalReuseDecision> {
+    let locations = local_chunk_info.get(&strong_hash)?;
+
+    if locations
+        .iter()
+        .any(|location| location.file_path == dest_path && location.offset == dest_offset)
+    {
+        return Some(LocalReuseDecision::InPlace);
+    }
+
+    if let Some(location) = locations
+        .iter()
+        .find(|location| location.file_path == dest_path)
+    {
+        return Some(LocalReuseDecision::Relocate {
+            offset: location.offset,
+            length: location.size as usize,
+        });
+    }
+
+    locations.first().cloned().map(LocalReuseDecision::Copy)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn classify_chunks(
     chunks: &[FileChunk],
@@ -20,56 +54,8 @@ pub fn classify_chunks(
     existing_strong_hashes: &HashSet<[u8; 32]>,
     local_chunk_info: &LocalChunkInfo,
     global_chunk_info: &GlobalChunkInfo,
-    _dest_path: &str,
+    dest_path: &str,
 ) -> ChunkClassification {
-    tracing::info!(
-        "classify_chunks called: global_chunk_info size={}, local_chunk_info size={}, existing_strong_hashes size={}",
-        global_chunk_info.len(),
-        local_chunk_info.len(),
-        existing_strong_hashes.len()
-    );
-
-    for (idx, (hash, locs)) in global_chunk_info.iter().take(3).enumerate() {
-        tracing::info!(
-            "Sample global_chunk_info[{}]: hash={}, locations={}",
-            idx,
-            hex::encode(hash),
-            locs.len()
-        );
-    }
-
-    tracing::info!("Total chunks to classify: {}", chunks.len());
-
-    let mut chunks_with_strong = 0;
-    let mut chunks_in_global = 0;
-    for (i, chunk) in chunks.iter().enumerate() {
-        if let Some(strong) = chunk.chunk_hash.strong {
-            chunks_with_strong += 1;
-            let in_global = global_chunk_info.contains_key(&strong);
-            if in_global {
-                chunks_in_global += 1;
-            }
-            if i < 3 {
-                let in_local = local_chunk_info.contains_key(&strong);
-                let in_existing = existing_strong_hashes.contains(&strong);
-                tracing::info!(
-                    "Chunk[{}]: hash={}, in_global={}, in_local={}, in_existing={}",
-                    i,
-                    hex::encode(strong),
-                    in_global,
-                    in_local,
-                    in_existing
-                );
-            }
-        }
-    }
-    tracing::info!(
-        "Chunks summary: total={}, with_strong={}, in_global={}",
-        chunks.len(),
-        chunks_with_strong,
-        chunks_in_global
-    );
-
     let mut chunks_to_transfer = Vec::new();
     let mut chunks_to_relocate = Vec::new();
     let mut chunks_to_copy = Vec::new();
@@ -91,60 +77,34 @@ pub fn classify_chunks(
 
         if already_exists {
             if let Some(strong_hash) = chunk.chunk_hash.strong {
-                tracing::info!(
-                    "Chunk {} already_exists=true, checking local_chunk_info first",
-                    i
-                );
-                if let Some(&(local_offset, local_length)) = local_chunk_info.get(&strong_hash) {
-                    if local_offset == dest_offset {
-                        state.mark_chunk_completed(i);
-                        skipped_bytes += chunk.length;
-                        dedup_count += 1;
-                        continue;
-                    } else {
-                        chunks_to_relocate.push((i, local_offset, dest_offset, local_length));
-                        continue;
+                if let Some(local_reuse) =
+                    select_local_reuse(strong_hash, dest_offset, local_chunk_info, dest_path)
+                {
+                    match local_reuse {
+                        LocalReuseDecision::InPlace => {
+                            state.mark_chunk_completed(i);
+                            skipped_bytes += chunk.length;
+                            dedup_count += 1;
+                            continue;
+                        }
+                        LocalReuseDecision::Relocate { offset, length } => {
+                            chunks_to_relocate.push((i, offset, dest_offset, length));
+                            continue;
+                        }
+                        LocalReuseDecision::Copy(location) => {
+                            chunks_to_copy.push((i, location, dest_offset));
+                            continue;
+                        }
                     }
                 }
 
                 if let Some(locations) = global_chunk_info.get(&strong_hash) {
-                    tracing::info!(
-                        "Chunk {} has {} candidate locations from global index",
-                        i,
-                        locations.len()
-                    );
                     for location in locations {
-                        if let Some(loc_strong) = location.strong_hash {
-                            if loc_strong == strong_hash {
-                                tracing::info!(
-                                    "Chunk {} matched! Copying from {} at offset {}",
-                                    i,
-                                    location.file_path,
-                                    location.offset
-                                );
-                                chunks_to_copy.push((i, location.clone(), dest_offset));
-                                continue 'outer;
-                            } else {
-                                tracing::warn!(
-                                    "Chunk {} location strong_hash mismatch: expected {:?}, got {:?}",
-                                    i,
-                                    hex::encode(strong_hash),
-                                    hex::encode(loc_strong)
-                                );
-                            }
-                        } else {
-                            tracing::warn!(
-                                "Chunk {} location has no strong_hash! file_path={}",
-                                i,
-                                location.file_path
-                            );
+                        if location.strong_hash == Some(strong_hash) {
+                            chunks_to_copy.push((i, location.clone(), dest_offset));
+                            continue 'outer;
                         }
                     }
-                } else {
-                    tracing::warn!(
-                        "Chunk {} strong_hash exists in set but not in global_chunk_info map!",
-                        i
-                    );
                 }
             }
         }
@@ -158,5 +118,111 @@ pub fn classify_chunks(
         chunks_to_copy,
         dedup_count,
         skipped_bytes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_chunks;
+    use crate::core::chunk::ChunkHash;
+    use crate::core::transfer_state::FileTransferState;
+    use crate::sync::engine::{core::FileChunk, ChunkLocation};
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn classify_chunks_prefers_existing_destination_offset_for_duplicate_blocks() {
+        let strong_hash = [7; 32];
+        let chunks = vec![FileChunk {
+            file_path: "source.bin".to_string(),
+            offset: 0,
+            length: 4,
+            chunk_hash: ChunkHash {
+                weak: 1,
+                strong: Some(strong_hash),
+            },
+        }];
+        let mut state = FileTransferState::new("source.bin".to_string(), 1);
+        let dest_offset_map = HashMap::from([(0usize, 0u64)]);
+        let existing = HashSet::from([strong_hash]);
+        let local_chunk_info = HashMap::from([(
+            strong_hash,
+            vec![
+                ChunkLocation {
+                    file_path: "dest.bin".to_string(),
+                    offset: 8,
+                    size: 4,
+                    mtime: 1,
+                    strong_hash: Some(strong_hash),
+                },
+                ChunkLocation {
+                    file_path: "dest.bin".to_string(),
+                    offset: 0,
+                    size: 4,
+                    mtime: 1,
+                    strong_hash: Some(strong_hash),
+                },
+            ],
+        )]);
+
+        let classification = classify_chunks(
+            &chunks,
+            &mut state,
+            &dest_offset_map,
+            &existing,
+            &local_chunk_info,
+            &HashMap::new(),
+            "dest.bin",
+        );
+
+        assert!(state.is_chunk_completed(0));
+        assert_eq!(classification.dedup_count, 1);
+        assert_eq!(classification.skipped_bytes, 4);
+        assert!(classification.chunks_to_transfer.is_empty());
+        assert!(classification.chunks_to_relocate.is_empty());
+    }
+
+    #[test]
+    fn classify_chunks_copies_from_other_local_file_when_destination_differs() {
+        let strong_hash = [9; 32];
+        let chunks = vec![FileChunk {
+            file_path: "source.bin".to_string(),
+            offset: 0,
+            length: 4,
+            chunk_hash: ChunkHash {
+                weak: 2,
+                strong: Some(strong_hash),
+            },
+        }];
+        let mut state = FileTransferState::new("source.bin".to_string(), 1);
+        let dest_offset_map = HashMap::from([(0usize, 0u64)]);
+        let existing = HashSet::from([strong_hash]);
+        let local_chunk_info = HashMap::from([(
+            strong_hash,
+            vec![ChunkLocation {
+                file_path: "dest.bin".to_string(),
+                offset: 0,
+                size: 4,
+                mtime: 1,
+                strong_hash: Some(strong_hash),
+            }],
+        )]);
+
+        let classification = classify_chunks(
+            &chunks,
+            &mut state,
+            &dest_offset_map,
+            &existing,
+            &local_chunk_info,
+            &HashMap::new(),
+            "dest.bin.tmp",
+        );
+
+        assert!(!state.is_chunk_completed(0));
+        assert_eq!(classification.dedup_count, 0);
+        assert!(classification.chunks_to_transfer.is_empty());
+        assert!(classification.chunks_to_relocate.is_empty());
+        assert_eq!(classification.chunks_to_copy.len(), 1);
+        assert_eq!(classification.chunks_to_copy[0].1.file_path, "dest.bin");
+        assert_eq!(classification.chunks_to_copy[0].2, 0);
     }
 }

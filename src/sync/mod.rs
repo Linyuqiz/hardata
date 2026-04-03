@@ -6,10 +6,11 @@ pub mod storage;
 pub mod transfer;
 
 use crate::util::error::Result;
+use crate::util::time::metadata_mtime_nanos;
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -17,12 +18,20 @@ pub struct SyncConfig {
     pub http_bind: String,
     #[serde(default = "default_sync_data_dir")]
     pub data_dir: String,
+    #[serde(default)]
+    pub allow_external_destinations: bool,
     #[serde(default = "default_metadata_dir")]
     pub metadata: String,
     #[serde(default)]
     pub web_ui: bool,
     #[serde(default)]
+    pub api_token: Option<String>,
+    #[serde(default)]
     pub regions: Vec<RegionConfig>,
+    #[serde(default = "default_stability_threshold_secs")]
+    pub stability_threshold_secs: u64,
+    #[serde(default)]
+    pub replicate_mode: engine::scheduler::ReplicateMode,
 }
 
 impl SyncConfig {
@@ -50,9 +59,41 @@ fn default_metadata_dir() -> String {
     ".hardata".to_string()
 }
 
+fn default_stability_threshold_secs() -> u64 {
+    20
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct HarDataConfig {
     pub sync: SyncConfig,
+}
+
+fn bind_is_loopback(bind: &str) -> bool {
+    if let Ok(addr) = bind.parse::<SocketAddr>() {
+        return match addr.ip() {
+            IpAddr::V4(ip) => ip.is_loopback(),
+            IpAddr::V6(ip) => ip.is_loopback(),
+        };
+    }
+
+    let host = bind
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim_matches('[')
+        .trim_matches(']');
+    matches!(host, "127.0.0.1" | "::1" | "localhost")
+}
+
+fn normalize_api_token(token: Option<String>) -> Option<String> {
+    token.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
@@ -69,7 +110,14 @@ pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
         crate::util::error::HarDataError::InvalidConfig(format!("Invalid YAML: {}", e))
     })?;
 
-    let config = hardata_config.sync;
+    let mut config = hardata_config.sync;
+    config.api_token = normalize_api_token(config.api_token.take());
+
+    if config.replicate_mode == engine::scheduler::ReplicateMode::Append {
+        warn!(
+            "replicate_mode=append exposes partially written destination files before sync completes"
+        );
+    }
 
     info!(
         "Sync starting: http={}, data_dir={}, regions={}",
@@ -77,6 +125,12 @@ pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
         config.data_dir,
         config.regions.len()
     );
+
+    if config.api_token.is_none() && !bind_is_loopback(&config.http_bind) {
+        return Err(crate::util::error::HarDataError::InvalidConfig(
+            "sync.api_token must be a non-empty token when http_bind is not loopback".to_string(),
+        ));
+    }
 
     if !std::path::Path::new(&config.data_dir).exists() {
         std::fs::create_dir_all(&config.data_dir).map_err(crate::util::error::HarDataError::Io)?;
@@ -201,7 +255,9 @@ pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
         compression_strategy: crate::util::compression::CompressionStrategy::default(),
         batch_size: SCHEDULER_BATCH_SIZE,
         max_concurrent_files: SCHEDULER_MAX_CONCURRENT_FILES,
-        replicate_mode: engine::scheduler::ReplicateMode::default(),
+        stability_threshold: std::time::Duration::from_secs(config.stability_threshold_secs),
+        replicate_mode: config.replicate_mode,
+        allow_external_destinations: config.allow_external_destinations,
         global_index,
     };
 
@@ -210,7 +266,14 @@ pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
 
     scheduler.start().await?;
 
-    let app = api::create_sync_router(scheduler.clone(), regions_for_api);
+    let app = api::create_sync_router(
+        scheduler.clone(),
+        regions_for_api,
+        config.data_dir.clone(),
+        config.allow_external_destinations,
+        config.web_ui,
+        config.api_token.clone(),
+    );
 
     let http_bind = config.http_bind.clone();
     let listener = tokio::net::TcpListener::bind(&http_bind)
@@ -222,28 +285,35 @@ pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
 
     info!("HTTP API listening on {}", http_bind);
 
+    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    let shutdown_notify_http = shutdown_notify.clone();
+
     let api_handle = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+        if let Err(e) = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                shutdown_notify_http.notified().await;
+                info!("HTTP server starting graceful shutdown");
+            })
+            .await
+        {
             error!("HTTP API server error: {}", e);
         }
     });
 
-    info!("Sync started successfully (Press Ctrl+C to stop)");
+    info!("Sync started successfully");
     info!("  - HTTP API: {}", http_bind);
     info!(
         "  - Web UI: {}",
         if config.web_ui { "enabled" } else { "disabled" }
     );
 
-    tokio::select! {
-        _ = api_handle => {
-            info!("HTTP API stopped");
-        }
-        _ = tokio::signal::ctrl_c() => {
-            info!("Received Ctrl+C, shutting down...");
-        }
-    }
+    let signal = crate::util::signal::shutdown_signal().await;
+    info!("Received {}, shutting down...", signal);
 
+    shutdown_notify.notify_one();
+    let _ = api_handle.await;
+
+    scheduler.shutdown().await?;
     info!("Sync shutdown complete");
     Ok(())
 }
@@ -292,12 +362,7 @@ async fn scan_and_index_local_files(
                 };
 
                 let file_size = metadata.len();
-                let mtime = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
+                let mtime = metadata_mtime_nanos(&metadata);
 
                 let file_path_str = file_path.to_string_lossy().to_string();
 
@@ -390,7 +455,11 @@ fn collect_files_recursive<'a>(
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            let metadata = entry.metadata().await?;
+            let metadata = tokio::fs::symlink_metadata(&path).await?;
+
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
 
             if metadata.is_dir() {
                 if let Some(name) = path.file_name() {
@@ -406,4 +475,87 @@ fn collect_files_recursive<'a>(
 
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bind_is_loopback, collect_files_recursive, normalize_api_token, HarDataConfig};
+    use crate::sync::engine::scheduler::ReplicateMode;
+    use std::path::PathBuf;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("hardata-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalize_api_token_trims_and_drops_blank_values() {
+        assert_eq!(
+            normalize_api_token(Some("  secret  ".to_string())),
+            Some("secret".to_string())
+        );
+        assert_eq!(normalize_api_token(Some("   ".to_string())), None);
+        assert_eq!(normalize_api_token(None), None);
+    }
+
+    #[test]
+    fn bind_is_loopback_accepts_common_loopback_hosts() {
+        assert!(bind_is_loopback("127.0.0.1:8080"));
+        assert!(bind_is_loopback("localhost:8080"));
+        assert!(!bind_is_loopback("0.0.0.0:8080"));
+    }
+
+    #[tokio::test]
+    async fn collect_files_recursive_skips_symlinked_directories() {
+        let root = temp_dir("collect-files");
+        let local_file = root.join("local.txt");
+        let outside_dir = root.join("outside");
+        let outside_file = outside_dir.join("outside.txt");
+        let linked_dir = root.join("linked");
+
+        std::fs::write(&local_file, b"local").unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(&outside_file, b"outside").unwrap();
+        std::os::unix::fs::symlink(&outside_dir, &linked_dir).unwrap();
+
+        let mut files = Vec::new();
+        collect_files_recursive(&root, &mut files).await.unwrap();
+
+        let file_set: std::collections::HashSet<PathBuf> = files.into_iter().collect();
+        assert!(file_set.contains(&local_file));
+        assert!(file_set.contains(&outside_file));
+        assert!(!file_set.contains(&linked_dir.join("outside.txt")));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sync_config_defaults_to_tmp_replicate_mode() {
+        let config: HarDataConfig = serde_yaml::from_str(
+            r#"
+            sync:
+              http_bind: "127.0.0.1:9080"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.sync.replicate_mode, ReplicateMode::Tmp);
+        assert_eq!(config.sync.stability_threshold_secs, 20);
+    }
+
+    #[test]
+    fn sync_config_allows_custom_stability_threshold() {
+        let config: HarDataConfig = serde_yaml::from_str(
+            r#"
+            sync:
+              http_bind: "127.0.0.1:9080"
+              stability_threshold_secs: 3
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.sync.stability_threshold_secs, 3);
+    }
 }

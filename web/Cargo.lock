@@ -1193,6 +1193,7 @@ dependencies = [
  "dioxus",
  "gloo-net",
  "gloo-timers",
+ "js-sys",
  "serde",
  "serde_json",
  "wasm-bindgen",

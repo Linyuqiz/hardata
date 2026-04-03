@@ -42,3 +42,9 @@ agent.log
 
 # macOS system files
 .DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+
+AGENTS.md

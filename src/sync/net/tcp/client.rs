@@ -4,6 +4,56 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tracing::debug;
 
+fn normalize_server_addr(server_addr: &str) -> Result<String> {
+    let addr_clean = server_addr
+        .strip_prefix("tcp://")
+        .unwrap_or(server_addr)
+        .trim()
+        .to_string();
+
+    if addr_clean.is_empty() {
+        return Err(HarDataError::InvalidConfig(
+            "TCP server address cannot be empty".to_string(),
+        ));
+    }
+
+    let (host, port) = addr_clean.rsplit_once(':').ok_or_else(|| {
+        HarDataError::InvalidConfig(format!(
+            "TCP server address '{}' must include a host and port",
+            addr_clean
+        ))
+    })?;
+
+    let normalized_host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host)
+        .trim();
+
+    if normalized_host.is_empty() {
+        return Err(HarDataError::InvalidConfig(format!(
+            "TCP server address '{}' has an empty host",
+            addr_clean
+        )));
+    }
+
+    let parsed_port = port.parse::<u16>().map_err(|e| {
+        HarDataError::InvalidConfig(format!(
+            "TCP server address '{}' has an invalid port: {}",
+            addr_clean, e
+        ))
+    })?;
+
+    if parsed_port == 0 {
+        return Err(HarDataError::InvalidConfig(format!(
+            "TCP server address '{}' must use a non-zero port",
+            addr_clean
+        )));
+    }
+
+    Ok(addr_clean)
+}
+
 #[derive(Clone)]
 pub struct TcpClient {
     pub(super) server_addr: String,
@@ -12,10 +62,7 @@ pub struct TcpClient {
 
 impl TcpClient {
     pub fn new(server_addr: String) -> Result<Self> {
-        let addr_clean = server_addr
-            .strip_prefix("tcp://")
-            .unwrap_or(&server_addr)
-            .to_string();
+        let addr_clean = normalize_server_addr(&server_addr)?;
 
         debug!("TCP client created: {}", addr_clean);
 
@@ -26,10 +73,7 @@ impl TcpClient {
     }
 
     pub fn with_pool(server_addr: String, pool_size: Option<usize>) -> Result<Self> {
-        let addr_clean = server_addr
-            .strip_prefix("tcp://")
-            .unwrap_or(&server_addr)
-            .to_string();
+        let addr_clean = normalize_server_addr(&server_addr)?;
 
         let pool = TcpConnectionPool::new(addr_clean.clone(), pool_size)?;
 
@@ -47,6 +91,10 @@ impl TcpClient {
 
     pub fn pool_status(&self) -> Option<crate::sync::net::pool::PoolStatus> {
         self.pool.as_ref().map(|p| p.status())
+    }
+
+    pub fn server_addr(&self) -> &str {
+        &self.server_addr
     }
 
     pub async fn connect(&self) -> Result<TcpStream> {
@@ -130,5 +178,30 @@ impl std::ops::DerefMut for PooledTcpConnection {
             PooledTcpConnection::Pooled(obj) => &mut *obj,
             PooledTcpConnection::Direct(stream) => stream,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TcpClient;
+
+    #[test]
+    fn tcp_client_new_rejects_empty_server_address() {
+        let err = match TcpClient::new("".to_string()) {
+            Ok(_) => panic!("tcp client creation should fail for empty address"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn tcp_client_with_pool_rejects_missing_port() {
+        let err = match TcpClient::with_pool("localhost".to_string(), Some(1)) {
+            Ok(_) => panic!("tcp pooled client creation should fail without port"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("must include a host and port"));
     }
 }

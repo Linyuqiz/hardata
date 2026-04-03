@@ -19,6 +19,9 @@ impl QuicClient {
                 succeeded: 0,
                 failed: 0,
                 total_bytes: 0,
+                cancelled: false,
+                succeeded_indices: Vec::new(),
+                failed_indices: Vec::new(),
             });
         }
 
@@ -35,6 +38,8 @@ impl QuicClient {
         let mut succeeded = 0;
         let mut failed = 0;
         let mut total_transferred = 0u64;
+        let mut succeeded_indices = Vec::new();
+        let mut failed_indices = Vec::new();
 
         for (idx, item) in items.iter().enumerate() {
             let read_request = ReadBlockRequest {
@@ -63,6 +68,7 @@ impl QuicClient {
                     e
                 );
                 failed += 1;
+                failed_indices.push(idx);
                 continue;
             }
 
@@ -78,10 +84,12 @@ impl QuicClient {
                         Ok(_) => {
                             succeeded += 1;
                             total_transferred += data.len() as u64;
+                            succeeded_indices.push(idx);
                         }
                         Err(e) => {
                             warn!("Failed to write file {}/{}: {}", idx + 1, total_items, e);
                             failed += 1;
+                            failed_indices.push(idx);
                         }
                     }
                 }
@@ -93,6 +101,7 @@ impl QuicClient {
                         e
                     );
                     failed += 1;
+                    failed_indices.push(idx);
                 }
             }
         }
@@ -108,6 +117,9 @@ impl QuicClient {
             succeeded,
             failed,
             total_bytes: total_transferred,
+            cancelled: false,
+            succeeded_indices,
+            failed_indices,
         })
     }
 }

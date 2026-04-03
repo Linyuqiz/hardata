@@ -1,6 +1,6 @@
 use crate::util::error::{HarDataError, Result};
+use crate::util::file_ops::read_file_range_from;
 use fastcdc::ronomon::FastCDC;
-use memmap2::Mmap;
 use rayon::prelude::*;
 use std::fs::File;
 use std::path::Path;
@@ -28,6 +28,57 @@ impl Default for StreamingFastCDCConfig {
             max_chunk_size: DEFAULT_MAX_CHUNK_SIZE,
             window_size: DEFAULT_WINDOW_SIZE,
         }
+    }
+}
+
+impl StreamingFastCDCConfig {
+    fn validate(&self) -> Result<()> {
+        use fastcdc::ronomon::{
+            AVERAGE_MAX, AVERAGE_MIN, MAXIMUM_MAX, MAXIMUM_MIN, MINIMUM_MAX, MINIMUM_MIN,
+        };
+
+        if self.window_size == 0 {
+            return Err(HarDataError::InvalidConfig(
+                "CDC window_size must be greater than 0".to_string(),
+            ));
+        }
+
+        if !(MINIMUM_MIN..=MINIMUM_MAX).contains(&self.min_chunk_size) {
+            return Err(HarDataError::InvalidConfig(format!(
+                "CDC min_chunk_size {} is out of range {}..={}",
+                self.min_chunk_size, MINIMUM_MIN, MINIMUM_MAX
+            )));
+        }
+
+        if !(AVERAGE_MIN..=AVERAGE_MAX).contains(&self.avg_chunk_size) {
+            return Err(HarDataError::InvalidConfig(format!(
+                "CDC avg_chunk_size {} is out of range {}..={}",
+                self.avg_chunk_size, AVERAGE_MIN, AVERAGE_MAX
+            )));
+        }
+
+        if !(MAXIMUM_MIN..=MAXIMUM_MAX).contains(&self.max_chunk_size) {
+            return Err(HarDataError::InvalidConfig(format!(
+                "CDC max_chunk_size {} is out of range {}..={}",
+                self.max_chunk_size, MAXIMUM_MIN, MAXIMUM_MAX
+            )));
+        }
+
+        if self.min_chunk_size > self.avg_chunk_size {
+            return Err(HarDataError::InvalidConfig(format!(
+                "CDC min_chunk_size {} must not exceed avg_chunk_size {}",
+                self.min_chunk_size, self.avg_chunk_size
+            )));
+        }
+
+        if self.avg_chunk_size > self.max_chunk_size {
+            return Err(HarDataError::InvalidConfig(format!(
+                "CDC avg_chunk_size {} must not exceed max_chunk_size {}",
+                self.avg_chunk_size, self.max_chunk_size
+            )));
+        }
+
+        Ok(())
     }
 }
 
@@ -76,6 +127,8 @@ impl StreamingFastCDC {
         config: &StreamingFastCDCConfig,
         compute_strong_hash: bool,
     ) -> Result<Vec<ChunkEntry>> {
+        config.validate()?;
+
         let file = File::open(path)
             .map_err(|e| HarDataError::FileOperation(format!("Failed to open file: {}", e)))?;
 
@@ -95,19 +148,11 @@ impl StreamingFastCDC {
             config.max_chunk_size / 1024 / 1024
         );
 
-        let mmap = unsafe {
-            Mmap::map(&file)
-                .map_err(|e| HarDataError::FileOperation(format!("Failed to mmap file: {}", e)))?
-        };
-
-        #[cfg(unix)]
-        {
-            mmap.advise(memmap2::Advice::Sequential)
-                .unwrap_or_else(|e| debug!("madvise failed (non-critical): {}", e));
-        }
-
         if file_size <= config.window_size as u64 {
-            return Self::chunk_single_window(&mmap, 0, config, compute_strong_hash);
+            let full_window = read_file_range_from(&file, 0, file_size as usize).map_err(|e| {
+                HarDataError::FileOperation(format!("Failed to read file window: {}", e))
+            })?;
+            return Self::chunk_single_window(&full_window, 0, config, compute_strong_hash);
         }
 
         let mut all_chunks = Vec::new();
@@ -117,11 +162,14 @@ impl StreamingFastCDC {
         while global_offset < file_size {
             let window_end = std::cmp::min(global_offset + window_size as u64, file_size);
             let is_last_window = window_end >= file_size;
-
-            let window = &mmap[global_offset as usize..window_end as usize];
+            let window =
+                read_file_range_from(&file, global_offset, (window_end - global_offset) as usize)
+                    .map_err(|e| {
+                    HarDataError::FileOperation(format!("Failed to read file window: {}", e))
+                })?;
 
             let chunker = FastCDC::new(
-                window,
+                &window,
                 config.min_chunk_size,
                 config.avg_chunk_size,
                 config.max_chunk_size,
@@ -215,5 +263,58 @@ impl StreamingFastCDC {
             .collect();
 
         Ok(chunks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StreamingFastCDC, StreamingFastCDCConfig};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_file_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("hardata-cdc-{label}-{unique}.bin"))
+    }
+
+    #[tokio::test]
+    async fn chunk_file_rejects_invalid_chunk_order() {
+        let file_path = temp_file_path("invalid-order");
+        std::fs::write(&file_path, vec![1u8; 4096]).unwrap();
+
+        let cdc = StreamingFastCDC::new(StreamingFastCDCConfig {
+            min_chunk_size: 4096,
+            avg_chunk_size: 2048,
+            max_chunk_size: 8192,
+            window_size: 4096,
+        });
+
+        let err = cdc.chunk_file(&file_path).await.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("min_chunk_size 4096 must not exceed avg_chunk_size 2048"));
+
+        std::fs::remove_file(file_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn chunk_file_rejects_zero_window_size() {
+        let file_path = temp_file_path("zero-window");
+        std::fs::write(&file_path, vec![1u8; 4096]).unwrap();
+
+        let cdc = StreamingFastCDC::new(StreamingFastCDCConfig {
+            window_size: 0,
+            ..Default::default()
+        });
+
+        let err = cdc.chunk_file_weak_only(&file_path).await.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("window_size must be greater than 0"));
+
+        std::fs::remove_file(file_path).unwrap();
     }
 }

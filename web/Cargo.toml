@@ -15,9 +15,11 @@ web-sys = { version = "0.3", features = [
     "HtmlElement",
     "EventSource",
     "MessageEvent",
+    "Storage",
 ] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 gloo-net = "0.6"
+js-sys = "0.3"
 
 [profile.release]
 opt-level = 3           # 性能最大化

@@ -1,8 +1,8 @@
 use crate::sync::engine::ChunkLocation;
 use crate::util::error::Result;
 use crate::util::file_ops::{read_file_range, write_file_range};
+use crate::util::time::{metadata_mtime_nanos, timestamps_match};
 use std::collections::HashMap;
-use std::time::UNIX_EPOCH;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,14 +57,9 @@ pub async fn copy_chunk_from_file(
         }
     };
 
-    let current_mtime = metadata
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let current_mtime = metadata_mtime_nanos(&metadata);
 
-    if current_mtime != source.mtime {
+    if !timestamps_match(current_mtime, source.mtime) {
         debug!(
             "Source file modified: {} (expected mtime={}, actual={})",
             source.file_path, source.mtime, current_mtime

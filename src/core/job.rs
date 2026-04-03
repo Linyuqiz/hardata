@@ -19,10 +19,15 @@ impl JobType {
     }
 
     pub fn parse(s: &str) -> Self {
+        Self::try_parse(s).unwrap_or(Self::Once)
+    }
+
+    pub fn try_parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "full" => Self::Full,
-            "sync" => Self::Sync,
-            _ => Self::Once,
+            "once" => Some(Self::Once),
+            "full" => Some(Self::Full),
+            "sync" => Some(Self::Sync),
+            _ => None,
         }
     }
 
@@ -35,7 +40,7 @@ impl JobType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
     Pending,
@@ -56,6 +61,22 @@ impl JobStatus {
             Self::Completed => "completed",
             Self::Failed => "failed",
         }
+    }
+
+    pub fn try_parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "pending" => Some(Self::Pending),
+            "syncing" => Some(Self::Syncing),
+            "paused" => Some(Self::Paused),
+            "cancelled" => Some(Self::Cancelled),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Pending | Self::Syncing | Self::Paused)
     }
 }
 
@@ -104,6 +125,10 @@ pub struct Job {
     #[serde(default = "default_priority")]
     pub priority: i32,
     #[serde(default)]
+    pub round_id: i64,
+    #[serde(default)]
+    pub is_last_round: bool,
+    #[serde(default)]
     pub options: JobConfig,
     #[serde(default)]
     pub progress: u8,
@@ -111,6 +136,8 @@ pub struct Job {
     pub current_size: u64,
     #[serde(default)]
     pub total_size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
     #[serde(default = "chrono::Utc::now")]
     pub created_at: chrono::DateTime<chrono::Utc>,
     #[serde(default = "chrono::Utc::now")]
@@ -138,10 +165,13 @@ impl Job {
             exclude_regex: Vec::new(),
             include_regex: Vec::new(),
             priority: default_priority(),
+            round_id: 0,
+            is_last_round: false,
             options: JobConfig::default(),
             progress: 0,
             current_size: 0,
             total_size: 0,
+            error_message: None,
             created_at: now,
             updated_at: now,
         }

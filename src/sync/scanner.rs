@@ -1,4 +1,5 @@
 use crate::util::error::Result;
+use crate::util::time::{metadata_ctime_nanos, metadata_inode, metadata_mtime_nanos};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, warn};
@@ -8,6 +9,8 @@ pub struct ScannedFile {
     pub path: PathBuf,
     pub size: u64,
     pub modified: i64,
+    pub change_time: Option<i64>,
+    pub inode: Option<u64>,
     pub is_dir: bool,
     pub mode: u32,
     pub is_symlink: bool,
@@ -71,12 +74,47 @@ impl FileScanner {
         files: &'a mut Vec<ScannedFile>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            if !path.exists() {
-                warn!("Path does not exist: {:?}", path);
+            let metadata = match fs::symlink_metadata(path).await {
+                Ok(metadata) => metadata,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    warn!("Path does not exist: {:?}", path);
+                    return Ok(());
+                }
+                Err(e) => return Err(e.into()),
+            };
+
+            if metadata.file_type().is_symlink() {
+                if !self.should_include(path) {
+                    return Ok(());
+                }
+
+                let modified = metadata_mtime_nanos(&metadata);
+                let symlink_target = fs::read_link(path)
+                    .await
+                    .ok()
+                    .map(|target| target.to_string_lossy().to_string());
+
+                #[cfg(unix)]
+                let mode = {
+                    use std::os::unix::fs::MetadataExt;
+                    metadata.mode()
+                };
+                #[cfg(not(unix))]
+                let mode = 0u32;
+
+                files.push(ScannedFile {
+                    path: path.to_path_buf(),
+                    size: metadata.len(),
+                    modified,
+                    change_time: metadata_ctime_nanos(&metadata),
+                    inode: metadata_inode(&metadata),
+                    is_dir: false,
+                    mode,
+                    is_symlink: true,
+                    symlink_target,
+                });
                 return Ok(());
             }
-
-            let metadata = fs::metadata(path).await?;
 
             if metadata.is_dir() {
                 let mut read_dir = fs::read_dir(path).await?;
@@ -95,12 +133,7 @@ impl FileScanner {
                     return Ok(());
                 }
 
-                let modified = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
+                let modified = metadata_mtime_nanos(&metadata);
 
                 #[cfg(unix)]
                 let mode = {
@@ -114,6 +147,8 @@ impl FileScanner {
                     path: path.to_path_buf(),
                     size: metadata.len(),
                     modified,
+                    change_time: metadata_ctime_nanos(&metadata),
+                    inode: metadata_inode(&metadata),
                     is_dir: false,
                     mode,
                     is_symlink: false,
@@ -151,5 +186,68 @@ impl FileScanner {
         }
 
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileScanner;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("hardata-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_scanner_keeps_symlink_entries_but_skips_descending_into_them() {
+        let root = temp_dir("scanner-root");
+        let local_file = root.join("local.txt");
+        let external = temp_dir("scanner-external");
+        let external_file = external.join("secret.txt");
+        let linked_dir = root.join("linked");
+
+        std::fs::write(&local_file, b"local").unwrap();
+        std::fs::write(&external_file, b"external").unwrap();
+        std::os::unix::fs::symlink(&external, &linked_dir).unwrap();
+
+        let scanner = FileScanner::new(root.to_str().unwrap(), Vec::new(), Vec::new()).unwrap();
+        let files = scanner.scan().await.unwrap();
+        let file_set: HashSet<PathBuf> = files.into_iter().map(|f| f.path).collect();
+
+        assert!(file_set.contains(&local_file));
+        assert!(file_set.contains(&linked_dir));
+        assert!(!file_set.contains(&linked_dir.join("secret.txt")));
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(external).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_scanner_includes_symlinked_files() {
+        let root = temp_dir("scanner-symlink-file");
+        let target = root.join("target.txt");
+        let link = root.join("link.txt");
+        std::fs::write(&target, b"target").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let scanner = FileScanner::new(root.to_str().unwrap(), Vec::new(), Vec::new()).unwrap();
+        let files = scanner.scan().await.unwrap();
+        let link_entry = files
+            .into_iter()
+            .find(|file| file.path == link)
+            .expect("symlink file should be scanned");
+
+        assert!(link_entry.is_symlink);
+        assert_eq!(
+            link_entry.symlink_target.as_deref(),
+            Some(target.to_str().unwrap())
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

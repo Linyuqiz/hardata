@@ -11,7 +11,7 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info, warn};
 
 use super::config::{
-    configure_server, generate_self_signed_cert, MAX_CONCURRENT_CONNECTIONS,
+    configure_server, load_or_generate_self_signed_cert, MAX_CONCURRENT_CONNECTIONS,
     MAX_CONCURRENT_STREAMS, MAX_PAYLOAD_SIZE, REQUEST_TIMEOUT_SECS,
 };
 use super::handlers;
@@ -30,8 +30,11 @@ impl QuicServer {
         bind_addr: &str,
         compute: Arc<ComputeService>,
         data_dir: &str,
+        certificate_hostnames: &[String],
     ) -> Result<Self> {
-        let (certs, key) = generate_self_signed_cert()?;
+        let data_dir_path = PathBuf::from(data_dir);
+        let (certs, key) =
+            load_or_generate_self_signed_cert(bind_addr, &data_dir_path, certificate_hostnames)?;
 
         let server_config = configure_server(certs, key)?;
 
@@ -44,7 +47,7 @@ impl QuicServer {
         Ok(Self {
             endpoint,
             compute,
-            data_dir: PathBuf::from(data_dir),
+            data_dir: data_dir_path,
             connection_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS)),
             stream_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_STREAMS)),
             active_connections: Arc::new(AtomicUsize::new(0)),

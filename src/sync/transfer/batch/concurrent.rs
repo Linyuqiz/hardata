@@ -4,13 +4,51 @@ use crate::util::compression::decompress_with_algorithm;
 use crate::util::error::Result;
 use bytes::Bytes;
 use quinn::Connection;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
 use tracing::{debug, warn};
 
-use super::types::{BatchTransferItem, BatchTransferResult, ProgressCallback};
+use super::types::{BatchTransferItem, BatchTransferResult, CancelCallback, ProgressCallback};
 
 use crate::core::constants::MAX_ITEMS_PER_REQUEST;
+
+#[derive(Default)]
+struct BatchOutcome {
+    cancelled: bool,
+    succeeded_indices: Vec<usize>,
+    failed_indices: Vec<usize>,
+    transferred_bytes: u64,
+}
+
+impl BatchOutcome {
+    fn merge(&mut self, mut other: Self) {
+        self.cancelled |= other.cancelled;
+        self.succeeded_indices.append(&mut other.succeeded_indices);
+        self.failed_indices.append(&mut other.failed_indices);
+        self.transferred_bytes += other.transferred_bytes;
+    }
+}
+
+fn is_cancelled_batch_error(error: &str) -> bool {
+    error.contains("Job cancelled by user")
+}
+
+fn record_batch_failure(
+    outcome: &mut BatchOutcome,
+    batch: &[(usize, BatchTransferItem)],
+    error: &str,
+) -> bool {
+    outcome
+        .failed_indices
+        .extend(batch.iter().map(|(idx, _)| *idx));
+    if is_cancelled_batch_error(error) {
+        outcome.cancelled = true;
+        return true;
+    }
+    false
+}
+
+fn normalize_stream_concurrency(max_concurrent_streams: usize) -> usize {
+    max_concurrent_streams.max(1)
+}
 
 impl QuicClient {
     pub async fn read_and_write_batch_concurrent(
@@ -26,6 +64,7 @@ impl QuicClient {
             job_id,
             max_concurrent_streams,
             None,
+            None,
         )
         .await
     }
@@ -37,21 +76,30 @@ impl QuicClient {
         job_id: &str,
         max_concurrent_streams: usize,
         progress_callback: Option<ProgressCallback>,
+        cancel_callback: Option<CancelCallback>,
     ) -> Result<BatchTransferResult> {
         if items.is_empty() {
             return Ok(BatchTransferResult {
                 succeeded: 0,
                 failed: 0,
                 total_bytes: 0,
+                cancelled: false,
+                succeeded_indices: Vec::new(),
+                failed_indices: Vec::new(),
             });
         }
 
         let total_items = items.len();
         let total_bytes: u64 = items.iter().map(|item| item.length).sum();
 
+        let max_concurrent_streams = normalize_stream_concurrency(max_concurrent_streams);
         let chunk_size = total_items.div_ceil(max_concurrent_streams);
-        let item_chunks: Vec<Vec<BatchTransferItem>> =
-            items.chunks(chunk_size).map(|c| c.to_vec()).collect();
+        let indexed_items: Vec<(usize, BatchTransferItem)> =
+            items.into_iter().enumerate().collect();
+        let item_chunks: Vec<Vec<(usize, BatchTransferItem)>> = indexed_items
+            .chunks(chunk_size)
+            .map(|c| c.to_vec())
+            .collect();
 
         debug!(
             "QUIC batch transfer: {} chunks, {} bytes, {} streams, {} per stream, job_id: {}",
@@ -62,72 +110,94 @@ impl QuicClient {
             job_id
         );
 
-        let succeeded = Arc::new(AtomicUsize::new(0));
-        let failed = Arc::new(AtomicUsize::new(0));
-        let total_transferred = Arc::new(AtomicU64::new(0));
-
         let tasks: Vec<_> = item_chunks
             .into_iter()
             .enumerate()
             .map(|(group_idx, group_items)| {
                 let connection = connection.clone();
-                let succeeded = succeeded.clone();
-                let failed = failed.clone();
-                let total_transferred = total_transferred.clone();
                 let progress_callback = progress_callback.clone();
+                let cancel_callback = cancel_callback.clone();
+                let fallback_failed_indices: Vec<usize> =
+                    group_items.iter().map(|(idx, _)| *idx).collect();
 
-                tokio::spawn(async move {
-                    let stream_result = connection.open_bi().await;
-                    let (mut send, mut recv) = match stream_result {
-                        Ok(streams) => streams,
-                        Err(e) => {
-                            warn!("QUIC: Failed to open stream for group {}: {}", group_idx, e);
-                            failed.fetch_add(group_items.len(), Ordering::Relaxed);
-                            return;
-                        }
-                    };
+                (
+                    fallback_failed_indices,
+                    tokio::spawn(async move {
+                        let mut group_outcome = BatchOutcome::default();
 
-                    debug!(
-                        "QUIC: Group {} processing {} items",
-                        group_idx,
-                        group_items.len()
-                    );
+                        let stream_result = connection.open_bi().await;
+                        let (mut send, mut recv) = match stream_result {
+                            Ok(streams) => streams,
+                            Err(e) => {
+                                warn!("QUIC: Failed to open stream for group {}: {}", group_idx, e);
+                                group_outcome.failed_indices =
+                                    group_items.iter().map(|(idx, _)| *idx).collect();
+                                return group_outcome;
+                            }
+                        };
 
-                    for batch in group_items.chunks(MAX_ITEMS_PER_REQUEST) {
-                        if let Err(e) = process_batch_on_stream(
-                            &mut send,
-                            &mut recv,
-                            batch,
-                            &succeeded,
-                            &failed,
-                            &total_transferred,
-                            &progress_callback,
-                        )
-                        .await
-                        {
-                            warn!("QUIC Group {}: Batch failed: {}", group_idx, e);
-                        }
-                    }
-
-                    if let Err(e) = send.finish() {
-                        warn!(
-                            "QUIC: Failed to finish stream for group {}: {}",
-                            group_idx, e
+                        debug!(
+                            "QUIC: Group {} processing {} items",
+                            group_idx,
+                            group_items.len()
                         );
-                    }
 
-                    debug!("QUIC: Group {} completed", group_idx);
-                })
+                        for batch in group_items.chunks(MAX_ITEMS_PER_REQUEST) {
+                            match process_batch_on_stream(
+                                &mut send,
+                                &mut recv,
+                                batch,
+                                &progress_callback,
+                                &cancel_callback,
+                            )
+                            .await
+                            {
+                                Ok(batch_outcome) => {
+                                    let cancelled = batch_outcome.cancelled;
+                                    group_outcome.merge(batch_outcome);
+                                    if cancelled {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("QUIC Group {}: Batch failed: {}", group_idx, e);
+                                    if record_batch_failure(&mut group_outcome, batch, &e) {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Err(e) = send.finish() {
+                            warn!(
+                                "QUIC: Failed to finish stream for group {}: {}",
+                                group_idx, e
+                            );
+                        }
+
+                        debug!("QUIC: Group {} completed", group_idx);
+                        group_outcome
+                    }),
+                )
             })
             .collect();
 
-        for task in tasks {
-            let _ = task.await;
+        let mut final_outcome = BatchOutcome::default();
+        for (fallback_failed_indices, task) in tasks {
+            match task.await {
+                Ok(outcome) => final_outcome.merge(outcome),
+                Err(e) => {
+                    warn!("QUIC group task failed: {}", e);
+                    final_outcome.failed_indices.extend(fallback_failed_indices);
+                }
+            }
         }
 
-        let final_succeeded = succeeded.load(Ordering::Relaxed);
-        let final_failed = failed.load(Ordering::Relaxed);
-        let final_transferred = total_transferred.load(Ordering::Relaxed);
+        final_outcome.succeeded_indices.sort_unstable();
+        final_outcome.failed_indices.sort_unstable();
+        let final_succeeded = final_outcome.succeeded_indices.len();
+        let final_failed = final_outcome.failed_indices.len();
+        let final_transferred = final_outcome.transferred_bytes;
 
         debug!(
             "QUIC batch transfer completed: {}/{} succeeded, {} bytes",
@@ -138,26 +208,43 @@ impl QuicClient {
             succeeded: final_succeeded,
             failed: final_failed,
             total_bytes: final_transferred,
+            cancelled: final_outcome.cancelled,
+            succeeded_indices: final_outcome.succeeded_indices,
+            failed_indices: final_outcome.failed_indices,
         })
+    }
+}
+
+fn mark_unhandled_items_failed(
+    outcome: &mut BatchOutcome,
+    handled: &[bool],
+    items: &[(usize, BatchTransferItem)],
+) {
+    for (handled_flag, (global_idx, _)) in handled.iter().zip(items.iter()) {
+        if !handled_flag {
+            outcome.failed_indices.push(*global_idx);
+        }
     }
 }
 
 async fn process_batch_on_stream(
     send: &mut quinn::SendStream,
     recv: &mut quinn::RecvStream,
-    items: &[BatchTransferItem],
-    succeeded: &Arc<AtomicUsize>,
-    failed: &Arc<AtomicUsize>,
-    total_transferred: &Arc<AtomicU64>,
+    items: &[(usize, BatchTransferItem)],
     progress_callback: &Option<ProgressCallback>,
-) -> std::result::Result<(), String> {
+    cancel_callback: &Option<CancelCallback>,
+) -> std::result::Result<BatchOutcome, String> {
     if items.is_empty() {
-        return Ok(());
+        return Ok(BatchOutcome::default());
+    }
+
+    if cancel_callback.as_ref().is_some_and(|callback| callback()) {
+        return Err("Job cancelled by user".to_string());
     }
 
     let read_items: Vec<ReadBlockItem> = items
         .iter()
-        .map(|item| ReadBlockItem {
+        .map(|(_, item)| ReadBlockItem {
             file_path: item.source_path.clone(),
             offset: item.source_offset,
             length: item.length,
@@ -179,18 +266,32 @@ async fn process_batch_on_stream(
         .await
         .map_err(|e| format!("Failed to receive batch response: {}", e))?;
 
+    let mut outcome = BatchOutcome::default();
+    let mut handled = vec![false; items.len()];
+
     for result in response.results {
+        if cancel_callback.as_ref().is_some_and(|callback| callback()) {
+            outcome.cancelled = true;
+            mark_unhandled_items_failed(&mut outcome, &handled, items);
+            return Ok(outcome);
+        }
+
         let idx = result.index as usize;
         if idx >= items.len() {
             warn!("Invalid result index: {} >= {}", idx, items.len());
-            failed.fetch_add(1, Ordering::Relaxed);
             continue;
         }
 
-        let item = &items[idx];
+        if handled[idx] {
+            warn!("Duplicate result index received: {}", idx);
+            continue;
+        }
+        handled[idx] = true;
+
+        let (global_idx, item) = &items[idx];
 
         if !result.success {
-            failed.fetch_add(1, Ordering::Relaxed);
+            outcome.failed_indices.push(*global_idx);
             warn!(
                 "Read failed for item {}: {}",
                 idx,
@@ -208,14 +309,14 @@ async fn process_batch_on_stream(
                             compression_info.original_size,
                             decompressed.len()
                         );
-                        failed.fetch_add(1, Ordering::Relaxed);
+                        outcome.failed_indices.push(*global_idx);
                         continue;
                     }
                     decompressed
                 }
                 Err(e) => {
                     warn!("Decompression failed for item {}: {}", idx, e);
-                    failed.fetch_add(1, Ordering::Relaxed);
+                    outcome.failed_indices.push(*global_idx);
                     continue;
                 }
             }
@@ -228,19 +329,54 @@ async fn process_batch_on_stream(
         {
             Ok(_) => {
                 let bytes_written = data.len() as u64;
-                succeeded.fetch_add(1, Ordering::Relaxed);
-                total_transferred.fetch_add(bytes_written, Ordering::Relaxed);
+                outcome.succeeded_indices.push(*global_idx);
+                outcome.transferred_bytes += bytes_written;
                 debug!("Item {} completed: {} bytes", idx, bytes_written);
                 if let Some(callback) = progress_callback {
                     callback(bytes_written);
                 }
             }
             Err(e) => {
-                failed.fetch_add(1, Ordering::Relaxed);
+                outcome.failed_indices.push(*global_idx);
                 warn!("Failed to write item {}: {}", idx, e);
             }
         }
     }
 
-    Ok(())
+    mark_unhandled_items_failed(&mut outcome, &handled, items);
+
+    Ok(outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_stream_concurrency, record_batch_failure, BatchOutcome};
+    use crate::sync::transfer::batch::BatchTransferItem;
+
+    #[test]
+    fn normalize_stream_concurrency_clamps_zero_to_one() {
+        assert_eq!(normalize_stream_concurrency(0), 1);
+        assert_eq!(normalize_stream_concurrency(16), 16);
+    }
+
+    #[test]
+    fn record_batch_failure_marks_cancellation_and_stops_processing() {
+        let mut outcome = BatchOutcome::default();
+        let batch = vec![
+            (
+                3,
+                BatchTransferItem::new("src-a".to_string(), "dest".to_string(), 0, 0, 4, 1),
+            ),
+            (
+                7,
+                BatchTransferItem::new("src-b".to_string(), "dest".to_string(), 4, 4, 4, 2),
+            ),
+        ];
+
+        let should_stop = record_batch_failure(&mut outcome, &batch, "Job cancelled by user");
+
+        assert!(should_stop);
+        assert!(outcome.cancelled);
+        assert_eq!(outcome.failed_indices, vec![3, 7]);
+    }
 }

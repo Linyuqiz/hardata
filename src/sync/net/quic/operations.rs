@@ -1,6 +1,7 @@
 use crate::core::protocol::{ISyncMessage, MessageType};
 use crate::util::error::{HarDataError, Result};
-use tracing::{debug, info};
+use crate::util::time::unix_timestamp_millis;
+use tracing::debug;
 
 use super::client::QuicClient;
 
@@ -37,10 +38,13 @@ impl QuicClient {
         recv.read_exact(&mut header_buf).await?;
 
         let (msg_type, payload_len) = ISyncMessage::decode_header(&header_buf)?;
+        let payload_len = ISyncMessage::validate_payload_len(payload_len)?;
 
         if msg_type == MessageType::Error {
-            let mut error_buf = vec![0u8; payload_len as usize];
-            recv.read_exact(&mut error_buf).await?;
+            let mut error_buf = vec![0u8; payload_len];
+            if payload_len > 0 {
+                recv.read_exact(&mut error_buf).await?;
+            }
             let error_msg = String::from_utf8_lossy(&error_buf);
             return Err(HarDataError::ProtocolError(format!(
                 "Server error: {}",
@@ -55,7 +59,7 @@ impl QuicClient {
             )));
         }
 
-        let mut payload_buf = vec![0u8; payload_len as usize];
+        let mut payload_buf = vec![0u8; payload_len];
         if payload_len > 0 {
             recv.read_exact(&mut payload_buf).await?;
         }
@@ -68,7 +72,7 @@ impl QuicClient {
                 ))
             })?;
 
-        info!(
+        debug!(
             "QUIC server returned {} files/directories",
             response.files.len()
         );
@@ -82,10 +86,7 @@ impl QuicClient {
         let (mut send, mut recv) = connection.open_bi().await?;
         tracing::debug!("Bidirectional stream opened");
 
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let timestamp = unix_timestamp_millis(std::time::SystemTime::now());
 
         let request = crate::core::protocol::PingRequest { timestamp };
 
@@ -106,11 +107,24 @@ impl QuicClient {
         tracing::debug!("Pong response header received");
 
         let (msg_type, payload_len) = ISyncMessage::decode_header(&header_buf)?;
+        let payload_len = ISyncMessage::validate_payload_len(payload_len)?;
         tracing::debug!(
             "Decoded header: msg_type={:?}, payload_len={}",
             msg_type,
             payload_len
         );
+
+        if msg_type == MessageType::Error {
+            let mut error_buf = vec![0u8; payload_len];
+            if payload_len > 0 {
+                recv.read_exact(&mut error_buf).await?;
+            }
+            let error_msg = String::from_utf8_lossy(&error_buf);
+            return Err(HarDataError::ProtocolError(format!(
+                "Ping failed: {}",
+                error_msg
+            )));
+        }
 
         if msg_type != MessageType::Pong {
             return Err(HarDataError::ProtocolError(format!(
@@ -120,7 +134,7 @@ impl QuicClient {
         }
 
         tracing::debug!("Reading payload: {} bytes", payload_len);
-        let mut payload_buf = vec![0u8; payload_len as usize];
+        let mut payload_buf = vec![0u8; payload_len];
         if payload_len > 0 {
             recv.read_exact(&mut payload_buf).await?;
         }
@@ -134,10 +148,7 @@ impl QuicClient {
                 ))
             })?;
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let now = unix_timestamp_millis(std::time::SystemTime::now());
         let rtt = now.saturating_sub(response.timestamp);
 
         Ok(rtt)

@@ -14,6 +14,7 @@ pub const MAX_TOTAL_HANDLES: usize = 512;
 pub const IDLE_TIMEOUT_SECS: u64 = 60;
 
 pub const DEFAULT_BUFFER_SIZE: usize = 64 * 1024;
+pub const MAX_PROTOCOL_PAYLOAD_SIZE: usize = 256 * 1024 * 1024;
 
 pub const SCHEDULER_POOL_SIZE: usize = 64;
 pub const SCHEDULER_MIN_CONCURRENCY: usize = 4;

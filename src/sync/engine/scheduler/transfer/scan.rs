@@ -2,7 +2,7 @@ use crate::core::chunk::ChunkHash;
 use crate::sync::engine::core::FileChunk;
 use crate::sync::net::transport::TransportConnection;
 use crate::util::error::Result;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::sync::engine::scheduler::infrastructure::config::SchedulerConfig;
 
@@ -11,24 +11,16 @@ pub async fn chunk_file(
     path: &std::path::Path,
     connection: &mut TransportConnection,
 ) -> Result<Vec<FileChunk>> {
-    let path_str = path.to_string_lossy().to_string();
+    let path_str = build_remote_scan_request_path(path);
 
-    let relative_path = path_str
-        .strip_prefix(&config.data_dir)
-        .map(|p| p.trim_start_matches('/'))
-        .unwrap_or(&path_str);
-
-    info!(
-        "Requesting remote scan for file: {} (relative: {})",
-        path_str, relative_path
-    );
+    debug!("Requesting remote scan for file: {}", path_str,);
 
     let scan_response = match connection {
         TransportConnection::Quic { client, connection } => {
             client
                 .get_file_hashes(
                     connection,
-                    relative_path,
+                    &path_str,
                     config.min_chunk_size,
                     config.avg_chunk_size,
                     config.max_chunk_size,
@@ -36,11 +28,11 @@ pub async fn chunk_file(
                 .await?
         }
         TransportConnection::Tcp { client } => {
-            let mut stream = client.connect().await?;
+            let mut stream = client.get_pooled_connection().await?;
             client
                 .get_file_hashes(
                     &mut stream,
-                    relative_path,
+                    &path_str,
                     config.min_chunk_size,
                     config.avg_chunk_size,
                     config.max_chunk_size,
@@ -65,7 +57,7 @@ pub async fn chunk_file(
             };
 
             FileChunk {
-                file_path: relative_path.to_string(),
+                file_path: path_str.clone(),
                 offset: chunk_meta.offset,
                 length: chunk_meta.length,
                 chunk_hash,
@@ -79,4 +71,23 @@ pub async fn chunk_file(
     );
 
     Ok(chunks)
+}
+
+fn build_remote_scan_request_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_remote_scan_request_path;
+    use std::path::Path;
+
+    #[test]
+    fn build_remote_scan_request_path_does_not_strip_local_data_dir_prefix() {
+        let path = Path::new("/tmp/agent-data/file.txt");
+        assert_eq!(
+            build_remote_scan_request_path(path),
+            "/tmp/agent-data/file.txt"
+        );
+    }
 }

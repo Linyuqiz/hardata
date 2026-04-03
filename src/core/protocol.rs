@@ -93,9 +93,29 @@ impl ISyncMessage {
         Ok((msg_type, payload_len))
     }
 
+    pub fn validate_payload_len(payload_len: u32) -> Result<usize> {
+        let payload_len = usize::try_from(payload_len).map_err(|_| {
+            HarDataError::InvalidProtocol(format!(
+                "Payload size {} exceeds platform limits",
+                payload_len
+            ))
+        })?;
+
+        if payload_len > crate::core::constants::MAX_PROTOCOL_PAYLOAD_SIZE {
+            return Err(HarDataError::InvalidProtocol(format!(
+                "Payload size {} exceeds maximum allowed size {}",
+                payload_len,
+                crate::core::constants::MAX_PROTOCOL_PAYLOAD_SIZE
+            )));
+        }
+
+        Ok(payload_len)
+    }
+
     pub fn decode(buf: &[u8]) -> Result<Self> {
         let (msg_type, payload_len) = Self::decode_header(buf)?;
-        let total_len = Self::HEADER_SIZE + payload_len as usize;
+        let validated_payload_len = Self::validate_payload_len(payload_len)?;
+        let total_len = Self::HEADER_SIZE + validated_payload_len;
         if buf.len() < total_len {
             return Err(HarDataError::InvalidProtocol(format!(
                 "Buffer too small: expected {}, got {}",
@@ -128,6 +148,10 @@ pub struct FileInfo {
     pub is_directory: bool,
     #[serde(default)]
     pub modified: i64,
+    #[serde(default)]
+    pub change_time: Option<i64>,
+    #[serde(default)]
+    pub inode: Option<u64>,
     #[serde(default)]
     pub mode: u32,
     #[serde(default)]
@@ -241,4 +265,25 @@ pub struct CreateEmptyFileRequest {
 pub struct CreateEmptyFileResponse {
     pub success: bool,
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ISyncMessage;
+    use crate::core::constants::MAX_PROTOCOL_PAYLOAD_SIZE;
+
+    #[test]
+    fn validate_payload_len_accepts_configured_limit() {
+        assert_eq!(
+            ISyncMessage::validate_payload_len(MAX_PROTOCOL_PAYLOAD_SIZE as u32).unwrap(),
+            MAX_PROTOCOL_PAYLOAD_SIZE
+        );
+    }
+
+    #[test]
+    fn validate_payload_len_rejects_oversized_payload() {
+        let err =
+            ISyncMessage::validate_payload_len((MAX_PROTOCOL_PAYLOAD_SIZE + 1) as u32).unwrap_err();
+        assert!(err.to_string().contains("exceeds maximum allowed size"));
+    }
 }

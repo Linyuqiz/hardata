@@ -33,6 +33,10 @@ pub struct BatchTransferResult {
     pub succeeded: usize,
     pub failed: usize,
     pub total_bytes: u64,
+    pub cancelled: bool,
+    pub succeeded_indices: Vec<usize>,
+    pub failed_indices: Vec<usize>,
 }
 
+pub type CancelCallback = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 pub type ProgressCallback = std::sync::Arc<dyn Fn(u64) + Send + Sync>;

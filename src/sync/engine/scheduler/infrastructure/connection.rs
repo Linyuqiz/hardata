@@ -6,6 +6,7 @@ use crate::util::error::{HarDataError, Result};
 use dashmap::DashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -23,6 +24,31 @@ fn get_forced_protocol() -> Option<&'static str> {
         })
 }
 
+#[derive(Clone, Copy)]
+enum ConnectionEstablishMode {
+    Startup,
+    RuntimeReconnect,
+}
+
+fn retry_config_for_mode(mode: ConnectionEstablishMode) -> crate::util::retry::RetryConfig {
+    match mode {
+        ConnectionEstablishMode::Startup => crate::util::retry::RetryConfig {
+            max_retries: 1,
+            initial_delay_ms: 0,
+            max_delay_ms: 0,
+            backoff_multiplier: 1.0,
+        },
+        ConnectionEstablishMode::RuntimeReconnect => crate::util::retry::RetryConfig::default(),
+    }
+}
+
+fn connect_timeout_for_mode(mode: ConnectionEstablishMode) -> Duration {
+    match mode {
+        ConnectionEstablishMode::Startup => Duration::from_secs(3),
+        ConnectionEstablishMode::RuntimeReconnect => Duration::from_secs(15),
+    }
+}
+
 pub async fn establish_all_connections(
     config: &SchedulerConfig,
     connection_pools: &Arc<DashMap<String, Arc<Mutex<ConnectionPool>>>>,
@@ -33,20 +59,63 @@ pub async fn establish_all_connections(
         config.regions.len()
     );
 
+    let mut failures = Vec::new();
+    let mut successes = 0usize;
+
     for region in &config.regions {
         if let Some(pool) = connection_pools.get(&region.name) {
-            establish_region_connection(region, &pool, shutdown).await?;
+            match establish_region_connection_with_mode(
+                region,
+                &pool,
+                shutdown,
+                ConnectionEstablishMode::Startup,
+            )
+            .await
+            {
+                Ok(()) => successes += 1,
+                Err(err) => {
+                    warn!(
+                        "Initial connection to region '{}' failed, deferring to lazy reconnect: {}",
+                        region.name, err
+                    );
+                    failures.push(format!("{}: {}", region.name, err));
+                }
+            }
         }
     }
 
-    info!("All region connections established successfully");
-    Ok(())
+    if failures.is_empty() {
+        info!("All region connections established successfully");
+        Ok(())
+    } else {
+        Err(HarDataError::NetworkError(format!(
+            "Established {}/{} regions during startup; deferred regions: {}",
+            successes,
+            config.regions.len(),
+            failures.join("; ")
+        )))
+    }
 }
 
 pub async fn establish_region_connection(
     region: &RegionConfig,
     connection_pool: &Arc<Mutex<ConnectionPool>>,
     shutdown: &Arc<AtomicBool>,
+) -> Result<()> {
+    establish_region_connection_with_mode(
+        region,
+        connection_pool,
+        shutdown,
+        ConnectionEstablishMode::RuntimeReconnect,
+    )
+    .await
+}
+
+async fn establish_region_connection_with_mode(
+    region: &RegionConfig,
+    connection_pool: &Arc<Mutex<ConnectionPool>>,
+    shutdown: &Arc<AtomicBool>,
+    mode: ConnectionEstablishMode,
 ) -> Result<()> {
     let forced_protocol = get_forced_protocol();
 
@@ -57,19 +126,62 @@ pub async fn establish_region_connection(
         debug!("  Forced: {}", proto.to_uppercase());
     }
 
-    let connector =
-        HappyEyeballs::new(region.quic_bind.clone(), region.tcp_bind.clone(), Some(250));
+    let (quic_client, tcp_client) = {
+        let mut pool = connection_pool.lock().await;
+        // 重连时尝试重建 QUIC 客户端（证书可能在初始化后才生成）
+        if pool.quic_client.is_none() {
+            let quic_host = region.quic_bind.split(':').next().unwrap_or("").to_string();
+            if !quic_host.is_empty() && quic_host != "0.0.0.0" {
+                let safe_name = quic_host.replace(':', "-");
+                let ca_cert_path = format!(".hardata/tls/agent-cert-{}.der", safe_name);
+                if std::path::Path::new(&ca_cert_path).exists() {
+                    match crate::sync::net::quic::QuicClient::new(
+                        region.quic_bind.clone(),
+                        quic_host.clone(),
+                        ca_cert_path,
+                    ) {
+                        Ok(client) => {
+                            info!(
+                                "Region '{}' QUIC client recovered (certificate now available)",
+                                region.name
+                            );
+                            pool.quic_client = Some(client);
+                        }
+                        Err(e) => {
+                            debug!(
+                                "Region '{}' QUIC client rebuild skipped: {}",
+                                region.name, e
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        (pool.quic_client.clone(), pool.tcp_client.clone())
+    };
+
+    let connector = HappyEyeballs::new(quic_client, tcp_client, Some(250));
+    let retry_config = retry_config_for_mode(mode);
+    let connect_timeout = connect_timeout_for_mode(mode);
 
     let connection_result = match forced_protocol {
         Some("quic") => {
             debug!("Forcing QUIC-only connection for region '{}'", region.name);
-            ConnectionResult::Quic(connector.try_quic_only(30).await?)
+            ConnectionResult::Quic(
+                connector
+                    .try_quic_only_with_timeout(connect_timeout)
+                    .await?,
+            )
         }
         Some("tcp") => {
             debug!("Forcing TCP-only connection for region '{}'", region.name);
-            ConnectionResult::Tcp(connector.try_tcp_only(30).await?)
+            ConnectionResult::Tcp(connector.try_tcp_only_with_timeout(connect_timeout).await?)
         }
-        _ => connector.connect().await?,
+        _ => {
+            connector
+                .connect_with_retry_and_timeout(&retry_config, Some(connect_timeout))
+                .await?
+        }
     };
 
     match connection_result {

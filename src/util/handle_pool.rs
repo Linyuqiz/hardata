@@ -55,9 +55,13 @@ impl FileHandlePool {
         });
 
         let pool_clone = Arc::clone(&pool);
-        tokio::spawn(async move {
-            pool_clone.cleanup_loop().await;
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                pool_clone.cleanup_loop().await;
+            });
+        } else {
+            debug!("FileHandlePool initialized without tokio runtime; cleanup loop disabled");
+        }
 
         debug!(
             "FileHandlePool initialized: max_per_file={}, max_total={}",
@@ -130,6 +134,14 @@ impl FileHandlePool {
         }
     }
 
+    fn release_without_runtime(&self, path: &Path) {
+        self.active_handles.fetch_sub(1, Ordering::Relaxed);
+
+        if let Some(file_handles) = self.handles.get(path) {
+            file_handles.active_count.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
     async fn cleanup_loop(self: Arc<Self>) {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
         loop {
@@ -196,9 +208,13 @@ impl Drop for PooledFileHandle {
         if let Some(file) = self.file.take() {
             let pool = Arc::clone(&self.pool);
             let path = self.path.clone();
-            tokio::spawn(async move {
-                pool.release(path, file).await;
-            });
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    pool.release(path, file).await;
+                });
+            } else {
+                pool.release_without_runtime(&path);
+            }
         }
     }
 }
@@ -213,4 +229,52 @@ pub fn global_file_handle_pool() -> &'static Arc<FileHandlePool> {
 
 pub async fn acquire_file_handle(path: &Path) -> std::io::Result<PooledFileHandle> {
     global_file_handle_pool().acquire(path).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileHandlePool;
+    use std::sync::atomic::Ordering;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_file_path(label: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("hardata-handle-pool-{label}-{unique}.tmp"))
+    }
+
+    #[test]
+    fn file_handle_pool_new_without_runtime_does_not_panic() {
+        let pool = FileHandlePool::new();
+        assert_eq!(pool.active_handles.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn pooled_file_handle_drop_without_runtime_releases_active_counters() {
+        let file_path = temp_file_path("drop-no-runtime");
+        std::fs::write(&file_path, b"payload").unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (pool, handle) = runtime.block_on(async {
+            let pool = FileHandlePool::new();
+            let handle = pool.acquire(&file_path).await.unwrap();
+            assert_eq!(pool.active_handles.load(Ordering::Relaxed), 1);
+            (pool, handle)
+        });
+
+        drop(runtime);
+        drop(handle);
+
+        assert_eq!(pool.active_handles.load(Ordering::Relaxed), 0);
+        let active_count = pool
+            .handles
+            .get(&file_path)
+            .map(|entry| entry.active_count.load(Ordering::Relaxed))
+            .unwrap_or(0);
+        assert_eq!(active_count, 0);
+
+        std::fs::remove_file(file_path).unwrap();
+    }
 }

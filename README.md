@@ -17,8 +17,11 @@
 ### 编译
 
 ```bash
-cargo build --release
+make build-all
 ```
+
+如果前端资源已经提前构建完成，也可以单独执行 `cargo build --release`。
+干净 checkout 首次编译时，需要先执行 `make build-web` 生成 Web UI 资源。
 
 ### 启动 Agent (数据源)
 
@@ -36,7 +39,7 @@ cargo build --release
 
 ```yaml
 sync:
-  http_bind: "0.0.0.0:9080"
+  http_bind: "127.0.0.1:9080"
   data_dir: "./data/sync"
   web_ui: true
   regions:
@@ -49,6 +52,8 @@ agent:
   tcp_bind: "0.0.0.0:9444"
   data_dir: "./data/agent"
 ```
+
+本地联调用 `127.0.0.1` 最简单；如果要把 `sync.http_bind` 暴露到非回环地址，必须额外配置 `sync.api_token`。
 
 ## API
 
@@ -83,7 +88,7 @@ curl http://127.0.0.1:9080/api/v1/jobs
 ### 取消任务
 
 ```bash
-curl -X POST http://127.0.0.1:9080/api/v1/jobs/{job_id}/cancel
+curl -X DELETE http://127.0.0.1:9080/api/v1/jobs/{job_id}
 ```
 
 ### 结束 Sync 任务

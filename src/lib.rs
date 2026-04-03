@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod core;
+pub mod diff;
 pub mod sync;
 pub mod util;
 

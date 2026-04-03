@@ -35,9 +35,6 @@ pub enum HarDataError {
     #[error("Serialization error: {0}")]
     SerializationError(String),
 
-    #[error("HTTP request error: {0}")]
-    HttpRequest(#[from] reqwest::Error),
-
     #[error("Job not found: {0}")]
     JobNotFound(String),
 

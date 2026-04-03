@@ -1,6 +1,8 @@
 use crate::util::error::{HarDataError, Result};
 use deadpool::managed::{Manager, Pool, RecycleError};
+use std::mem::MaybeUninit;
 use std::time::Duration;
+use tokio::io::Interest;
 use tokio::net::TcpStream;
 use tracing::{debug, info};
 
@@ -78,12 +80,13 @@ impl Manager for TcpConnectionManager {
         conn: &mut TcpStream,
         _metrics: &deadpool::managed::Metrics,
     ) -> std::result::Result<(), RecycleError<Self::Error>> {
-        let mut buf = [0u8; 1];
-        match conn.try_read(&mut buf) {
-            Ok(0) => Err(RecycleError::message("Connection closed")),
-            Ok(_) => Ok(()),
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
-            Err(_e) => Err(RecycleError::message("Connection error")),
+        let socket = socket2::SockRef::from(&*conn);
+        let mut peek_buf = [MaybeUninit::<u8>::uninit(); 1];
+        match conn.try_io(Interest::READABLE, || socket.peek(&mut peek_buf)) {
+            Ok(0) => Err(RecycleError::message("Connection closed by peer")),
+            Ok(_) => Err(RecycleError::message("Connection has unread data")),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+            Err(_) => Err(RecycleError::message("Connection error")),
         }
     }
 }

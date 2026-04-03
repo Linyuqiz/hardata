@@ -1,6 +1,8 @@
 use crate::sync::net::quic::QuicClient;
 use crate::sync::net::tcp::TcpClient;
-use crate::sync::transfer::batch::{BatchTransferItem, BatchTransferResult, ProgressCallback};
+use crate::sync::transfer::batch::{
+    BatchTransferItem, BatchTransferResult, CancelCallback, ProgressCallback,
+};
 use crate::util::error::Result;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -75,7 +77,7 @@ impl TransportConnection {
         job_id: &str,
         max_concurrent_streams: usize,
     ) -> Result<BatchTransferResult> {
-        self.read_and_write_batch_with_progress(items, job_id, max_concurrent_streams, None)
+        self.read_and_write_batch_with_progress(items, job_id, max_concurrent_streams, None, None)
             .await
     }
 
@@ -85,6 +87,7 @@ impl TransportConnection {
         job_id: &str,
         max_concurrent_streams: usize,
         progress_callback: Option<ProgressCallback>,
+        cancel_callback: Option<CancelCallback>,
     ) -> Result<BatchTransferResult> {
         match self {
             TransportConnection::Quic { client, connection } => {
@@ -95,6 +98,7 @@ impl TransportConnection {
                         job_id,
                         max_concurrent_streams,
                         progress_callback,
+                        cancel_callback,
                     )
                     .await
             }
@@ -105,6 +109,7 @@ impl TransportConnection {
                         job_id,
                         max_concurrent_streams,
                         progress_callback,
+                        cancel_callback,
                     )
                     .await
             }
@@ -120,7 +125,7 @@ impl TransportConnection {
                 client.list_directory(connection, directory_path).await
             }
             TransportConnection::Tcp { client } => {
-                let mut stream = client.connect().await?;
+                let mut stream = client.get_pooled_connection().await?;
                 client.list_directory(&mut stream, directory_path).await
             }
         }
@@ -138,7 +143,7 @@ impl TransportConnection {
                     .await
             }
             TransportConnection::Tcp { client } => {
-                let mut stream = client.connect().await?;
+                let mut stream = client.get_pooled_connection().await?;
                 client
                     .get_strong_hashes(&mut stream, file_path, chunks)
                     .await

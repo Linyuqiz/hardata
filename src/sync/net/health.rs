@@ -3,7 +3,7 @@ use crate::sync::net::tcp::TcpClient;
 use anyhow::Result;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -83,8 +83,6 @@ impl HealthChecker {
     }
 
     async fn perform_check(&self) -> Result<()> {
-        let start = Instant::now();
-
         if let (Some(client), Some(conn)) = (&self.quic_client, &self.quic_connection) {
             match client.ping(conn).await {
                 Ok(rtt_ms) => {
@@ -101,24 +99,17 @@ impl HealthChecker {
         }
 
         if let Some(client) = &self.tcp_client {
-            if let Some(status) = client.pool_status() {
-                if status.size > 0 || status.available > 0 {
-                    let elapsed = start.elapsed().as_millis() as u64;
-                    self.record_success(Some(elapsed));
-                    info!(
-                        "TCP health check succeeded (pool: size={}, available={})",
-                        status.size, status.available
-                    );
+            match client.ping().await {
+                Ok(rtt_ms) => {
+                    self.record_success(Some(rtt_ms));
+                    info!("TCP health check succeeded, RTT: {}ms", rtt_ms);
                     return Ok(());
-                } else {
-                    self.record_failure();
-                    warn!("TCP health check failed: no connections available");
-                    return Err(anyhow::anyhow!("TCP pool has no connections"));
                 }
-            } else {
-                self.record_failure();
-                warn!("TCP health check failed: pool not configured");
-                return Err(anyhow::anyhow!("TCP client has no pool"));
+                Err(e) => {
+                    self.record_failure();
+                    warn!("TCP health check failed: {}", e);
+                    return Err(e.into());
+                }
             }
         }
 

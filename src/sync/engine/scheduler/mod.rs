@@ -15,8 +15,8 @@ pub use adaptive::{
 };
 
 pub use infrastructure::{
-    CacheBuilder, CacheBuilderStats, DynamicTransferConfig, JobRuntimeStatus, JobStatusCallback,
-    ReplicateMode, SchedulerConfig,
+    config::normalize_path, CacheBuilder, CacheBuilderStats, DynamicTransferConfig,
+    JobRuntimeStatus, JobStatusCallback, ReplicateMode, SchedulerConfig,
 };
 
 pub use optimization::{

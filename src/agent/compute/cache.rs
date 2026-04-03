@@ -1,4 +1,5 @@
 use crate::util::error::{HarDataError, Result};
+use crate::util::time::unix_timestamp_nanos;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use tracing::debug;
@@ -38,17 +39,16 @@ impl ComputeService {
         }
     }
 
-    pub(super) async fn get_file_mtime(path: &Path) -> Result<u64> {
+    pub(super) async fn get_file_mtime(path: &Path) -> Result<i64> {
         let metadata = tokio::fs::metadata(path)
             .await
             .map_err(|e| HarDataError::FileOperation(format!("Failed to get metadata: {}", e)))?;
 
-        let mtime = metadata
-            .modified()
-            .map_err(|e| HarDataError::FileOperation(format!("Failed to get mtime: {}", e)))?
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| HarDataError::FileOperation(format!("Invalid mtime: {}", e)))?
-            .as_secs();
+        let mtime = unix_timestamp_nanos(
+            metadata
+                .modified()
+                .map_err(|e| HarDataError::FileOperation(format!("Failed to get mtime: {}", e)))?,
+        );
 
         Ok(mtime)
     }

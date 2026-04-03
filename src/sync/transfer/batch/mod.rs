@@ -3,4 +3,4 @@ mod response;
 mod serial;
 mod types;
 
-pub use types::{BatchTransferItem, BatchTransferResult, ProgressCallback};
+pub use types::{BatchTransferItem, BatchTransferResult, CancelCallback, ProgressCallback};

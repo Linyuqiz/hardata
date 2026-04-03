@@ -47,6 +47,17 @@ impl<T: Clone> DelayedQueue<T> {
         None
     }
 
+    pub async fn retain<F>(&self, predicate: F)
+    where
+        F: Fn(&T) -> bool,
+    {
+        let mut items = self.items.lock().await;
+        items.retain(|_, tasks| {
+            tasks.retain(&predicate);
+            !tasks.is_empty()
+        });
+    }
+
     pub async fn len(&self) -> usize {
         let items = self.items.lock().await;
         items.values().map(|v| v.len()).sum()

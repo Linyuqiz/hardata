@@ -1,7 +1,10 @@
 use crate::core::constants::QUIC_MAX_CONCURRENT_STREAMS;
 use crate::sync::net::bandwidth::NetworkQuality;
-use crate::util::error::Result;
+use crate::util::error::{HarDataError, Result};
 use quinn::ClientConfig;
+use rustls::pki_types::CertificateDer;
+use rustls::RootCertStore;
+use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -82,20 +85,28 @@ pub fn configure_congestion_controller(quality: NetworkQuality) -> quinn::conges
     }
 }
 
-pub fn configure_client_for_quality(quality: NetworkQuality) -> Result<ClientConfig> {
-    let crypto = rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
-        .with_no_client_auth();
+pub fn configure_client_for_quality(
+    quality: NetworkQuality,
+    ca_cert_path: &str,
+) -> Result<ClientConfig> {
+    let cert_bytes = fs::read(ca_cert_path).map_err(|e| {
+        HarDataError::InvalidConfig(format!(
+            "Failed to read QUIC CA certificate '{}': {}",
+            ca_cert_path, e
+        ))
+    })?;
 
-    let mut client_config = ClientConfig::new(Arc::new(
-        quinn::crypto::rustls::QuicClientConfig::try_from(crypto).map_err(|e| {
-            crate::util::error::HarDataError::InvalidConfig(format!(
-                "Failed to create QUIC client config: {}",
-                e
-            ))
-        })?,
-    ));
+    let mut roots = RootCertStore::empty();
+    roots.add(CertificateDer::from(cert_bytes)).map_err(|e| {
+        HarDataError::InvalidConfig(format!(
+            "Failed to load QUIC CA certificate '{}': {}",
+            ca_cert_path, e
+        ))
+    })?;
+
+    let mut client_config = ClientConfig::with_root_certificates(Arc::new(roots)).map_err(|e| {
+        HarDataError::InvalidConfig(format!("Failed to create QUIC client config: {}", e))
+    })?;
 
     let timeout_config = DynamicTimeout::for_quality(quality);
     let mut transport_config = quinn::TransportConfig::default();
@@ -149,46 +160,4 @@ pub fn configure_client_for_quality(quality: NetworkQuality) -> Result<ClientCon
     client_config.transport_config(Arc::new(transport_config));
 
     Ok(client_config)
-}
-
-#[derive(Debug)]
-pub struct SkipServerVerification;
-
-impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ED25519,
-        ]
-    }
 }

@@ -30,6 +30,14 @@ pub fn build_offset_map(chunks: &[FileChunk]) -> HashMap<usize, u64> {
     dest_offset_map
 }
 
+fn progress_delta(new_total: u64, last_size: u64) -> u64 {
+    new_total.saturating_sub(last_size)
+}
+
+fn elapsed_millis(now_ms: u64, last_time: u64) -> u64 {
+    now_ms.saturating_sub(last_time)
+}
+
 pub fn create_progress_callback<F>(
     on_batch_progress: F,
     initial_transferred: u64,
@@ -60,11 +68,12 @@ where
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        let size_trigger = new_total - last_size >= REPORT_SIZE_INTERVAL;
-        let time_trigger = now_ms - last_time >= REPORT_TIME_INTERVAL_MS;
+        let delta = progress_delta(new_total, last_size);
+        let elapsed_ms = elapsed_millis(now_ms, last_time);
+        let size_trigger = delta >= REPORT_SIZE_INTERVAL;
+        let time_trigger = elapsed_ms >= REPORT_TIME_INTERVAL_MS;
 
-        if size_trigger || time_trigger {
-            let delta = new_total - last_size;
+        if delta > 0 && (size_trigger || time_trigger) {
             last_reported_clone.store(new_total, Ordering::Relaxed);
             last_report_time_clone.store(now_ms, Ordering::Relaxed);
             progress_callback_clone(delta);
@@ -77,4 +86,21 @@ where
         progress_callback,
         last_reported,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{elapsed_millis, progress_delta};
+
+    #[test]
+    fn progress_delta_is_saturating_when_callbacks_arrive_out_of_order() {
+        assert_eq!(progress_delta(10, 12), 0);
+        assert_eq!(progress_delta(12, 10), 2);
+    }
+
+    #[test]
+    fn elapsed_millis_is_saturating_when_clock_moves_backward() {
+        assert_eq!(elapsed_millis(100, 250), 0);
+        assert_eq!(elapsed_millis(750, 250), 500);
+    }
 }

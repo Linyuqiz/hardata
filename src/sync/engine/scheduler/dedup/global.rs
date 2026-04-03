@@ -4,7 +4,7 @@ use crate::sync::net::transport::TransportConnection;
 use crate::sync::scanner::ScannedFile;
 use crate::util::error::Result;
 use std::collections::{HashMap, HashSet};
-use tracing::info;
+use tracing::debug;
 
 pub type GlobalChunkInfo = HashMap<[u8; 32], Vec<ChunkLocation>>;
 
@@ -20,7 +20,7 @@ pub async fn check_global_dedup(
         .query_chunks(chunks, dest_path, existing_strong_hashes, connection, file)
         .await?;
 
-    info!(
+    debug!(
         "Global dedup check completed: {} chunks found, chunk_info size: {}",
         result.dedup_count,
         result.chunk_info.len()

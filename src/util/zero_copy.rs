@@ -106,6 +106,8 @@ impl FileOperator {
                 current_offset += n as i64;
             }
 
+            file.sync_data()?;
+
             Ok(written)
         })
         .await?
@@ -138,6 +140,7 @@ impl FileOperator {
         file.seek(std::io::SeekFrom::Start(offset)).await?;
         file.write_all(data).await?;
         file.flush().await?;
+        file.sync_data().await?;
 
         Ok(data.len())
     }

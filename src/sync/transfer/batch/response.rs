@@ -11,9 +11,10 @@ impl QuicClient {
         recv.read_exact(&mut header_buf).await?;
 
         let (msg_type, payload_len) = ISyncMessage::decode_header(&header_buf)?;
+        let payload_len = ISyncMessage::validate_payload_len(payload_len)?;
 
         if msg_type == MessageType::Error {
-            let mut error_buf = vec![0u8; payload_len as usize];
+            let mut error_buf = vec![0u8; payload_len];
             if payload_len > 0 {
                 recv.read_exact(&mut error_buf).await?;
             }
@@ -32,7 +33,7 @@ impl QuicClient {
         }
 
         let payload_data: Vec<u8> = if payload_len > 0 {
-            let mut buf = vec![0u8; payload_len as usize];
+            let mut buf = vec![0u8; payload_len];
             recv.read_exact(&mut buf).await?;
             buf
         } else {
@@ -54,9 +55,10 @@ impl QuicClient {
         recv.read_exact(&mut header_buf).await?;
 
         let (msg_type, payload_len) = ISyncMessage::decode_header(&header_buf)?;
+        let payload_len = ISyncMessage::validate_payload_len(payload_len)?;
 
         if msg_type == MessageType::Error {
-            let mut error_buf = vec![0u8; payload_len as usize];
+            let mut error_buf = vec![0u8; payload_len];
             if payload_len > 0 {
                 recv.read_exact(&mut error_buf).await?;
             }
@@ -78,15 +80,15 @@ impl QuicClient {
         let pooled_buffer = if payload_len > 0 {
             let pool = global_buffer_pool();
             let mut buffer = pool.acquire();
-            buffer.resize(payload_len as usize, 0);
-            recv.read_exact(&mut buffer[..payload_len as usize]).await?;
+            buffer.resize(payload_len, 0);
+            recv.read_exact(&mut buffer[..payload_len]).await?;
             Some(buffer)
         } else {
             None
         };
 
         let payload_data: &[u8] = match &pooled_buffer {
-            Some(buf) => &buf[..payload_len as usize],
+            Some(buf) => &buf[..payload_len],
             None => &[],
         };
 

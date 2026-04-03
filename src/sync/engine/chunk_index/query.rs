@@ -3,18 +3,32 @@ use crate::core::ChunkLocation as ProtocolChunkLocation;
 use crate::sync::net::transport::TransportConnection;
 use crate::sync::scanner::ScannedFile;
 use crate::util::error::{HarDataError, Result};
+use crate::util::time::{metadata_mtime_nanos, timestamps_match};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::UNIX_EPOCH;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
-struct ChunkToVerify {
-    chunk_idx: usize,
+#[derive(Clone)]
+struct CandidateLocation {
     local_file_path: String,
     local_offset: u64,
     local_strong: [u8; 32],
     location: ChunkLocation,
+}
+
+struct ChunkToVerify {
+    chunk_idx: usize,
+    candidates: Vec<CandidateLocation>,
+}
+
+fn select_candidate(
+    candidates: &[CandidateLocation],
+    remote_strong: [u8; 32],
+) -> Option<&CandidateLocation> {
+    candidates
+        .iter()
+        .find(|candidate| candidate.local_strong == remote_strong)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -67,7 +81,7 @@ pub async fn query_chunks(
 
     weak_filter_count.fetch_add(weak_candidates.len() as u64, Ordering::Relaxed);
 
-    info!(
+    debug!(
         "Global index weak filter: {}/{} chunks have weak matches ({} total candidates)",
         weak_candidates.len(),
         chunks.len(),
@@ -86,6 +100,7 @@ pub async fn query_chunks(
 
     for (chunk_idx, candidate_locations) in weak_candidates {
         let chunk = &chunks[chunk_idx];
+        let mut verification_candidates = Vec::new();
 
         for location in candidate_locations {
             if !verify_location_sync(&location)? {
@@ -114,18 +129,24 @@ pub async fn query_chunks(
                         location.offset
                     );
 
+                    verification_candidates.clear();
                     break;
                 }
             } else {
-                chunks_need_remote_verification.push(ChunkToVerify {
-                    chunk_idx,
+                verification_candidates.push(CandidateLocation {
                     local_file_path: location.file_path.clone(),
                     local_offset: location.offset,
                     local_strong,
                     location: location.clone(),
                 });
-                break;
             }
+        }
+
+        if chunk.chunk_hash.strong.is_none() && !verification_candidates.is_empty() {
+            chunks_need_remote_verification.push(ChunkToVerify {
+                chunk_idx,
+                candidates: verification_candidates,
+            });
         }
     }
 
@@ -144,7 +165,7 @@ pub async fn query_chunks(
     }
 
     if global_dedup_count > 0 {
-        info!(
+        debug!(
             "Global dedup completed: {}/{} chunks found in other files ({:.1}%)",
             global_dedup_count,
             chunks.len(),
@@ -170,7 +191,7 @@ async fn verify_with_remote(
     global_dedup_count: &mut usize,
     hit_count: &AtomicU64,
 ) -> Result<()> {
-    info!(
+    debug!(
         "Requesting {} strong hashes from remote for global dedup verification",
         chunks_to_verify.len()
     );
@@ -192,7 +213,7 @@ async fn verify_with_remote(
         .await
     {
         Ok(response) => {
-            info!(
+            debug!(
                 "Received {} strong hashes from remote for global dedup, verifying...",
                 response.hashes.len()
             );
@@ -208,22 +229,22 @@ async fn verify_with_remote(
 
             for (cv, remote_hash_result) in chunks_to_verify.iter().zip(response.hashes.iter()) {
                 let remote_strong = remote_hash_result.strong_hash;
-                if remote_strong == cv.local_strong {
+                if let Some(candidate) = select_candidate(&cv.candidates, remote_strong) {
                     chunks[cv.chunk_idx].chunk_hash.strong = Some(remote_strong);
 
                     global_strong_hashes.insert(remote_strong);
                     global_chunk_info
                         .entry(remote_strong)
                         .or_default()
-                        .push(cv.location.clone());
+                        .push(candidate.location.clone());
                     *global_dedup_count += 1;
                     hit_count.fetch_add(1, Ordering::Relaxed);
 
                     debug!(
                         "Global dedup verified: chunk {} found in {} at offset {}",
                         hex::encode(remote_strong),
-                        cv.local_file_path,
-                        cv.local_offset
+                        candidate.local_file_path,
+                        candidate.local_offset
                     );
                 }
             }
@@ -244,13 +265,53 @@ fn verify_location_sync(location: &ChunkLocation) -> Result<bool> {
     }
 
     if let Ok(metadata) = std::fs::metadata(file_path) {
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(duration) = modified.duration_since(UNIX_EPOCH) {
-                let current_mtime = duration.as_secs() as i64;
-                return Ok(current_mtime == location.mtime);
-            }
-        }
+        return Ok(timestamps_match(
+            metadata_mtime_nanos(&metadata),
+            location.mtime,
+        ));
     }
 
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{select_candidate, CandidateLocation};
+    use crate::sync::engine::ChunkLocation;
+
+    #[test]
+    fn select_candidate_matches_remote_hash_among_multiple_candidates() {
+        let strong_a = [1; 32];
+        let strong_b = [2; 32];
+        let candidates = vec![
+            CandidateLocation {
+                local_file_path: "a.bin".to_string(),
+                local_offset: 0,
+                local_strong: strong_a,
+                location: ChunkLocation {
+                    file_path: "a.bin".to_string(),
+                    offset: 0,
+                    size: 4,
+                    mtime: 1,
+                    strong_hash: Some(strong_a),
+                },
+            },
+            CandidateLocation {
+                local_file_path: "b.bin".to_string(),
+                local_offset: 8,
+                local_strong: strong_b,
+                location: ChunkLocation {
+                    file_path: "b.bin".to_string(),
+                    offset: 8,
+                    size: 4,
+                    mtime: 1,
+                    strong_hash: Some(strong_b),
+                },
+            },
+        ];
+
+        let selected = select_candidate(&candidates, strong_b).unwrap();
+        assert_eq!(selected.local_file_path, "b.bin");
+        assert_eq!(selected.local_offset, 8);
+    }
 }

@@ -1,6 +1,6 @@
 use crate::core::protocol::{ISyncMessage, MessageType};
 use crate::util::error::{HarDataError, Result};
-use tracing::{debug, info};
+use tracing::debug;
 
 use super::client::QuicClient;
 
@@ -43,10 +43,13 @@ impl QuicClient {
         recv.read_exact(&mut header_buf).await?;
 
         let (msg_type, payload_len) = ISyncMessage::decode_header(&header_buf)?;
+        let payload_len = ISyncMessage::validate_payload_len(payload_len)?;
 
         if msg_type == MessageType::Error {
-            let mut error_buf = vec![0u8; payload_len as usize];
-            recv.read_exact(&mut error_buf).await?;
+            let mut error_buf = vec![0u8; payload_len];
+            if payload_len > 0 {
+                recv.read_exact(&mut error_buf).await?;
+            }
             let error_msg = String::from_utf8_lossy(&error_buf);
             return Err(HarDataError::ProtocolError(format!(
                 "Server error: {}",
@@ -61,7 +64,7 @@ impl QuicClient {
             )));
         }
 
-        let mut payload_buf = vec![0u8; payload_len as usize];
+        let mut payload_buf = vec![0u8; payload_len];
         if payload_len > 0 {
             recv.read_exact(&mut payload_buf).await?;
         }
@@ -74,7 +77,7 @@ impl QuicClient {
                 ))
             })?;
 
-        info!(
+        debug!(
             "QUIC server returned file hashes: {} chunks, size={}",
             response.chunks.len(),
             response.file_size
@@ -89,7 +92,7 @@ impl QuicClient {
         file_path: &str,
         chunks: Vec<crate::core::ChunkLocation>,
     ) -> Result<crate::core::protocol::GetStrongHashesResponse> {
-        info!(
+        debug!(
             "Getting strong hashes via QUIC: {}, {} chunks",
             file_path,
             chunks.len()
@@ -121,10 +124,13 @@ impl QuicClient {
         recv.read_exact(&mut header_buf).await?;
 
         let (msg_type, payload_len) = ISyncMessage::decode_header(&header_buf)?;
+        let payload_len = ISyncMessage::validate_payload_len(payload_len)?;
 
         if msg_type == MessageType::Error {
-            let mut error_buf = vec![0u8; payload_len as usize];
-            recv.read_exact(&mut error_buf).await?;
+            let mut error_buf = vec![0u8; payload_len];
+            if payload_len > 0 {
+                recv.read_exact(&mut error_buf).await?;
+            }
             let error_msg = String::from_utf8_lossy(&error_buf).to_string();
             return Err(HarDataError::ProtocolError(format!(
                 "QUIC GetStrongHashes failed: {}",
@@ -139,7 +145,7 @@ impl QuicClient {
             )));
         }
 
-        let mut payload_buf = vec![0u8; payload_len as usize];
+        let mut payload_buf = vec![0u8; payload_len];
         if payload_len > 0 {
             recv.read_exact(&mut payload_buf).await?;
         }
@@ -152,7 +158,7 @@ impl QuicClient {
                 ))
             })?;
 
-        info!(
+        debug!(
             "QUIC server returned {} strong hashes",
             response.hashes.len()
         );

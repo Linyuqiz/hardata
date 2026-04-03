@@ -25,6 +25,11 @@ enum Commands {
         #[arg(short = 'c', long, default_value = "config.yaml")]
         config: String,
     },
+
+    Diff {
+        #[arg(long, value_name = "DIR")]
+        dir: String,
+    },
 }
 
 #[tokio::main]
@@ -47,6 +52,13 @@ async fn main() {
         Commands::Agent { config } => {
             if let Err(e) = hardata::agent::run_agent(config).await {
                 error!("Agent failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+
+        Commands::Diff { dir } => {
+            if let Err(e) = hardata::diff::run_diff(dir).await {
+                error!("Diff failed: {}", e);
                 std::process::exit(1);
             }
         }

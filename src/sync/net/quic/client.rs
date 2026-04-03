@@ -2,6 +2,7 @@ use crate::sync::net::bandwidth::NetworkQuality;
 use crate::util::error::{HarDataError, Result};
 use quinn::Endpoint;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -51,28 +52,39 @@ impl Default for SessionTicketStore {
 pub struct QuicClient {
     pub(super) endpoint: Endpoint,
     pub(super) server_addr: String,
+    pub(super) server_name: String,
     pub(super) ticket_store: Arc<SessionTicketStore>,
 }
 
 impl QuicClient {
-    pub fn new(server_addr: String) -> Result<Self> {
-        Self::new_with_quality(server_addr, NetworkQuality::Good)
+    pub fn new(server_addr: String, server_name: String, ca_cert_path: String) -> Result<Self> {
+        Self::new_with_quality(server_addr, server_name, ca_cert_path, NetworkQuality::Good)
     }
 
-    pub fn new_with_quality(server_addr: String, quality: NetworkQuality) -> Result<Self> {
+    pub fn new_with_quality(
+        server_addr: String,
+        server_name: String,
+        ca_cert_path: String,
+        quality: NetworkQuality,
+    ) -> Result<Self> {
         info!(
-            "Creating QUIC client for server: {} (quality: {:?})",
-            server_addr, quality
+            "Creating QUIC client for server: {} (server_name={}, quality={:?})",
+            server_addr, server_name, quality
         );
 
         let addr_clean = server_addr
             .strip_prefix("quic://")
             .unwrap_or(&server_addr)
             .to_string();
+        let Some(server_name) = normalize_server_name(&server_name) else {
+            return Err(HarDataError::InvalidConfig(
+                "QUIC server name cannot be empty".to_string(),
+            ));
+        };
 
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        let client_config = configure_client_for_quality(quality)?;
+        let client_config = configure_client_for_quality(quality, &ca_cert_path)?;
 
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())?;
         endpoint.set_default_client_config(client_config);
@@ -80,8 +92,17 @@ impl QuicClient {
         Ok(Self {
             endpoint,
             server_addr: addr_clean,
+            server_name,
             ticket_store: SessionTicketStore::new(),
         })
+    }
+
+    pub fn server_addr(&self) -> &str {
+        &self.server_addr
+    }
+
+    pub fn server_name(&self) -> &str {
+        &self.server_name
     }
 
     pub async fn connect(&self) -> Result<quinn::Connection> {
@@ -127,14 +148,7 @@ impl QuicClient {
 
         debug!("Resolved {} to {}", self.server_addr, addr);
 
-        let host = self.server_addr.split(':').next().ok_or_else(|| {
-            HarDataError::InvalidConfig(format!(
-                "Invalid server address format: {}",
-                self.server_addr
-            ))
-        })?;
-
-        let connection = self.endpoint.connect(addr, host)?.await?;
+        let connection = self.endpoint.connect(addr, &self.server_name)?.await?;
 
         info!(
             "Connected to server: {} (0-RTT: {})",
@@ -146,5 +160,86 @@ impl QuicClient {
         );
 
         Ok(connection)
+    }
+}
+
+fn normalize_server_name(server_name: &str) -> Option<String> {
+    let trimmed = server_name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(addr) = trimmed.parse::<SocketAddr>() {
+        return Some(addr.ip().to_string());
+    }
+
+    let normalized = strip_host_port(trimmed).trim();
+
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+fn strip_host_port(value: &str) -> &str {
+    if let Some(rest) = value.strip_prefix('[') {
+        if let Some((host, suffix)) = rest.split_once(']') {
+            if suffix.is_empty() || suffix.starts_with(':') {
+                return host;
+            }
+        }
+    }
+
+    if let Some((host, port)) = value.rsplit_once(':') {
+        if !host.is_empty()
+            && !port.is_empty()
+            && port.chars().all(|ch| ch.is_ascii_digit())
+            && !host.contains(':')
+        {
+            return host;
+        }
+    }
+
+    value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_server_name;
+
+    #[test]
+    fn normalize_server_name_strips_ipv6_brackets() {
+        assert_eq!(normalize_server_name("[::1]"), Some("::1".to_string()));
+        assert_eq!(
+            normalize_server_name("[2001:db8::1]"),
+            Some("2001:db8::1".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_server_name_rewrites_socket_addr_to_host() {
+        assert_eq!(normalize_server_name("[::1]:9443"), Some("::1".to_string()));
+        assert_eq!(
+            normalize_server_name("127.0.0.1:9443"),
+            Some("127.0.0.1".to_string())
+        );
+        assert_eq!(
+            normalize_server_name("files.example.com:9443"),
+            Some("files.example.com".to_string())
+        );
+        assert_eq!(
+            normalize_server_name("[files.example.com]:9443"),
+            Some("files.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_server_name_keeps_plain_host_and_rejects_blank() {
+        assert_eq!(
+            normalize_server_name(" files.example.com "),
+            Some("files.example.com".to_string())
+        );
+        assert_eq!(normalize_server_name("   "), None);
     }
 }

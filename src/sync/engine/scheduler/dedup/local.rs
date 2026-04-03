@@ -1,9 +1,10 @@
 use crate::sync::engine::core::FileChunk;
 use crate::util::cdc::{StreamingFastCDC, StreamingFastCDCConfig};
 use crate::util::error::Result;
+use crate::util::time::metadata_mtime_nanos;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::sync::engine::scheduler::infrastructure::config::SchedulerConfig;
 
@@ -16,7 +17,7 @@ pub struct LocalCdcResult {
 pub struct WeakHashMatchResult {
     pub existing_weak_hashes: HashSet<u64>,
     pub weak_matched_indices: Vec<usize>,
-    pub local_chunk_map: HashMap<u64, (u64, usize)>,
+    pub local_chunk_map: HashMap<u64, Vec<(u64, usize)>>,
 }
 
 pub async fn check_local_cdc(
@@ -27,7 +28,7 @@ pub async fn check_local_cdc(
     let dest_file_path = Path::new(dest_path);
 
     if !dest_file_path.exists() {
-        info!(
+        debug!(
             "Local dest file {} does not exist, no local deduplication possible",
             dest_path
         );
@@ -37,7 +38,7 @@ pub async fn check_local_cdc(
     let metadata = match tokio::fs::metadata(dest_file_path).await {
         Ok(m) => m,
         Err(e) => {
-            info!(
+            debug!(
                 "Failed to read metadata for {}: {}, skipping deduplication",
                 dest_path, e
             );
@@ -46,17 +47,12 @@ pub async fn check_local_cdc(
     };
 
     let file_size = metadata.len();
-    let mtime = metadata
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let mtime = metadata_mtime_nanos(&metadata);
 
     let local_chunks = if let Some(cache) = chunk_index {
         match cache.get(dest_path, mtime, file_size) {
             Ok(Some(cached)) => {
-                info!(
+                debug!(
                     "CDCResultCache hit for {}: {} chunks (mtime={}, size={})",
                     dest_path,
                     cached.chunks.len(),
@@ -88,14 +84,14 @@ pub async fn check_local_cdc(
     };
 
     if local_chunks.is_empty() {
-        info!(
+        debug!(
             "Local dest file {} is empty, no deduplication possible",
             dest_path
         );
         return Ok(None);
     }
 
-    info!("Local dest file has {} chunks", local_chunks.len());
+    debug!("Local dest file has {} chunks", local_chunks.len());
 
     Ok(Some(LocalCdcResult {
         chunks: local_chunks,
@@ -119,7 +115,7 @@ async fn compute_cdc(
     match cdc.chunk_file_weak_only(dest_file_path).await {
         Ok(chunks) => Ok(chunks),
         Err(e) => {
-            info!(
+            debug!(
                 "Failed to chunk local dest file {:?}: {}, skipping deduplication",
                 dest_file_path, e
             );
@@ -152,9 +148,9 @@ fn save_to_cache(
     };
 
     if let Err(e) = cache.put(dest_path, file_cache) {
-        info!("Failed to update CDCResultCache for {}: {}", dest_path, e);
+        debug!("Failed to update CDCResultCache for {}: {}", dest_path, e);
     } else {
-        info!(
+        debug!(
             "Updated CDCResultCache for {}: {} chunks",
             dest_path,
             chunks.len()
@@ -167,15 +163,15 @@ pub fn match_weak_hashes(
     local_chunks: &[crate::util::cdc::ChunkEntry],
 ) -> WeakHashMatchResult {
     let mut existing_weak_hashes: HashSet<u64> = HashSet::new();
+    let mut local_chunk_map: HashMap<u64, Vec<(u64, usize)>> = HashMap::new();
 
     for chunk in local_chunks {
         existing_weak_hashes.insert(chunk.weak_hash);
+        local_chunk_map
+            .entry(chunk.weak_hash)
+            .or_default()
+            .push((chunk.offset, chunk.length));
     }
-
-    let local_chunk_map: HashMap<u64, (u64, usize)> = local_chunks
-        .iter()
-        .map(|c| (c.weak_hash, (c.offset, c.length)))
-        .collect();
 
     let mut weak_matched_indices: Vec<usize> = Vec::new();
     for (idx, chunk) in source_chunks.iter().enumerate() {
@@ -184,7 +180,7 @@ pub fn match_weak_hashes(
         }
     }
 
-    info!(
+    debug!(
         "Weak hash matching: {} of {} source chunks match local dest",
         weak_matched_indices.len(),
         source_chunks.len()
