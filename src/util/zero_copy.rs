@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::path::Path;
-use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IOBackend {
@@ -13,13 +12,11 @@ impl IOBackend {
     pub fn auto_detect() -> Self {
         #[cfg(all(target_os = "linux", feature = "io-uring"))]
         {
-            debug!("Using Linux optimized I/O (pread/pwrite with sendfile)");
             IOBackend::IOUring
         }
 
         #[cfg(not(all(target_os = "linux", feature = "io-uring")))]
         {
-            debug!("Using Tokio standard I/O");
             IOBackend::Tokio
         }
     }

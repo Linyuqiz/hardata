@@ -8,8 +8,6 @@ use super::types::Database;
 
 impl Database {
     pub async fn save_job(&self, job: &Job) -> Result<()> {
-        info!("Saving job to database: {}", job.job_id);
-
         let exclude_regex = serde_json::to_string(&job.exclude_regex)?;
         let include_regex = serde_json::to_string(&job.include_regex)?;
         let options = serde_json::to_string(&job.options)?;
@@ -65,7 +63,6 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
-        info!("Job saved successfully: {}", job.job_id);
         Ok(())
     }
 

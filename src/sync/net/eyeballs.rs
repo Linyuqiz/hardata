@@ -4,7 +4,7 @@ use crate::util::error::{HarDataError, Result};
 use crate::util::retry::{retry_with_backoff, RetryConfig};
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportProtocol {
@@ -173,7 +173,7 @@ impl HappyEyeballs {
     }
 
     pub async fn try_quic_only_with_timeout(&self, timeout: Duration) -> Result<quinn::Connection> {
-        info!(
+        debug!(
             "Attempting QUIC connection only (timeout: {}ms)",
             timeout.as_millis()
         );
@@ -206,7 +206,7 @@ impl HappyEyeballs {
     }
 
     pub async fn try_tcp_only_with_timeout(&self, timeout: Duration) -> Result<TcpStream> {
-        info!(
+        debug!(
             "Attempting TCP connection only (timeout: {}ms)",
             timeout.as_millis()
         );

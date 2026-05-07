@@ -206,12 +206,6 @@ impl StreamingFastCDC {
             }
 
             all_chunks.extend(hashed_chunks);
-
-            debug!(
-                "Processed window: {} chunks so far, next_offset={}",
-                all_chunks.len(),
-                global_offset
-            );
         }
 
         debug!(

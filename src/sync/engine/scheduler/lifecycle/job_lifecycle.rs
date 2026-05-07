@@ -728,8 +728,6 @@ impl SyncScheduler {
     }
 
     pub(in crate::sync::engine::scheduler) async fn recover_pending_jobs(&self) -> Result<()> {
-        info!("Recovering pending jobs from database...");
-
         let jobs = self.db.load_active_jobs().await?;
         let mut recovered_count = 0;
 

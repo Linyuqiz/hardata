@@ -76,7 +76,6 @@ impl CacheBuilder {
 
             loop {
                 if !builder.running.load(Ordering::Relaxed) {
-                    debug!("CacheBuilder stopping...");
                     break;
                 }
 

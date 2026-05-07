@@ -11,7 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::handlers;
 
@@ -30,7 +30,6 @@ impl TcpServer {
         data_dir: &str,
     ) -> Result<Self> {
         let listener = TcpListener::bind(bind_addr).await?;
-        info!("TCP Server listening on {}", bind_addr);
 
         Ok(Self {
             listener,
@@ -43,7 +42,7 @@ impl TcpServer {
 
     pub async fn run(&self) -> Result<()> {
         info!(
-            "TCP Server started with max_connections={}",
+            "TCP server listening: max_connections={}",
             MAX_CONCURRENT_CONNECTIONS
         );
 
@@ -61,21 +60,19 @@ impl TcpServer {
                         }
                     };
 
-                    info!("New TCP connection from: {}", addr);
+                    debug!("New TCP connection from: {}", addr);
 
                     if let Err(e) = stream.set_nodelay(true) {
-                        tracing::warn!("Failed to set TCP_NODELAY for {}: {}", addr, e);
+                        warn!("Failed to set TCP_NODELAY for {}: {}", addr, e);
                     }
 
                     let sock_ref = socket2::SockRef::from(&stream);
                     if let Err(e) = sock_ref.set_send_buffer_size(1024 * 1024) {
-                        tracing::warn!("Failed to set send buffer for {}: {}", addr, e);
+                        warn!("Failed to set send buffer for {}: {}", addr, e);
                     }
                     if let Err(e) = sock_ref.set_recv_buffer_size(1024 * 1024) {
-                        tracing::warn!("Failed to set recv buffer for {}: {}", addr, e);
+                        warn!("Failed to set recv buffer for {}: {}", addr, e);
                     }
-
-                    info!("TCP optimizations applied: nodelay=true, buffers=1MB");
 
                     let compute = self.compute.clone();
                     let data_dir = self.data_dir.clone();
@@ -128,7 +125,7 @@ async fn handle_connection(
         match header_read_result {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                info!("TCP connection closed by peer: {}", peer_addr);
+                debug!("TCP connection closed by peer: {}", peer_addr);
                 break;
             }
             Err(e) => {
@@ -153,7 +150,7 @@ async fn handle_connection(
             continue;
         }
 
-        info!(
+        debug!(
             "Received TCP message from {}: type={:?}, payload_len={}",
             peer_addr, msg_type, payload_len
         );

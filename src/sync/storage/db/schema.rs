@@ -2,7 +2,6 @@ use crate::util::error::Result;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use sqlx::Row;
 use std::str::FromStr;
-use tracing::info;
 
 use super::types::Database;
 
@@ -335,7 +334,6 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
-        info!("Sync database schema initialized");
         Ok(())
     }
 }

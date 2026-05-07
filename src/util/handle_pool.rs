@@ -59,14 +59,7 @@ impl FileHandlePool {
             handle.spawn(async move {
                 pool_clone.cleanup_loop().await;
             });
-        } else {
-            debug!("FileHandlePool initialized without tokio runtime; cleanup loop disabled");
         }
-
-        debug!(
-            "FileHandlePool initialized: max_per_file={}, max_total={}",
-            MAX_HANDLES_PER_FILE, MAX_TOTAL_HANDLES
-        );
 
         pool
     }

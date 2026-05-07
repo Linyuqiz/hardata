@@ -68,7 +68,7 @@ impl Manager for TcpConnectionManager {
             .with_interval(Duration::from_secs(10));
         sock_ref.set_tcp_keepalive(&keepalive)?;
 
-        info!(
+        debug!(
             "TCP pooled connection created: {} (nodelay=true, buffers=1MB, keepalive=60s)",
             addr
         );

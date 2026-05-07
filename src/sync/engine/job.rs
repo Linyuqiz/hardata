@@ -192,8 +192,6 @@ impl TransferManagerPool {
         tmp_path_generations: Arc<DashMap<String, u64>>,
         mut rx: mpsc::Receiver<StateOperation>,
     ) {
-        info!("Transfer state writer started");
-
         while let Some(op) = rx.recv().await {
             match op {
                 StateOperation::Save {
@@ -319,8 +317,6 @@ impl TransferManagerPool {
                 }
             }
         }
-
-        info!("Transfer state writer stopped");
     }
 
     async fn enqueue_state_operation<F>(&self, build: F) -> crate::util::error::Result<()>

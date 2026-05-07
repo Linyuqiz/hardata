@@ -173,10 +173,7 @@ async fn handle_stream(
 
         match header_read_result {
             Ok(_) => {}
-            Err(quinn::ReadExactError::FinishedEarly(_)) => {
-                tracing::debug!("Stream closed by peer (FinishedEarly), exiting loop");
-                break;
-            }
+            Err(quinn::ReadExactError::FinishedEarly(_)) => break,
             Err(e) => {
                 tracing::error!("Failed to read header: {}", e);
                 return Err(HarDataError::NetworkError(format!(

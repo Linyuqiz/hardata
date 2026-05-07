@@ -223,7 +223,7 @@ async fn verify_with_remote(
     {
         Ok(response) => {
             info!(
-                "Received {} strong hashes from remote, verifying...",
+                "Received {} strong hashes from remote",
                 response.hashes.len()
             );
 

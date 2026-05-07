@@ -53,7 +53,7 @@ where
                 }
 
                 warn!(
-                    "{} failed (attempt {}/{}): {}. Retrying in {}ms...",
+                    "{} failed (attempt {}/{}): {}, retry in {}ms",
                     operation_name, attempt, config.max_retries, e, delay_ms
                 );
 

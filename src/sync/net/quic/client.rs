@@ -67,7 +67,7 @@ impl QuicClient {
         ca_cert_path: String,
         quality: NetworkQuality,
     ) -> Result<Self> {
-        info!(
+        debug!(
             "Creating QUIC client for server: {} (server_name={}, quality={:?})",
             server_addr, server_name, quality
         );

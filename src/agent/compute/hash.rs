@@ -56,12 +56,6 @@ impl ComputeService {
             return Ok(Vec::new());
         }
 
-        info!(
-            "Calculating strong hashes for {} chunks in {:?} (parallel)",
-            chunks.len(),
-            target_file_path
-        );
-
         let path = target_file_path.to_path_buf();
         let chunks_vec: Vec<_> = chunks.iter().map(|c| (c.offset, c.length)).collect();
 
@@ -103,7 +97,7 @@ impl ComputeService {
         .map_err(|e| HarDataError::FileOperation(format!("Failed to compute hashes: {}", e)))?;
 
         info!(
-            "Calculated {} strong hashes for {:?} (parallel completed)",
+            "Calculated {} strong hashes for {:?}",
             results.len(),
             target_file_path
         );

@@ -1,7 +1,6 @@
 use bytes::{Bytes, BytesMut};
 use crossbeam::queue::SegQueue;
 use std::sync::Arc;
-use tracing::debug;
 
 #[derive(Debug, Clone)]
 pub struct BufferPoolConfig {
@@ -48,11 +47,6 @@ impl BufferPool {
             let buffer = BytesMut::with_capacity(config.buffer_size);
             pool.free_buffers.push(buffer);
         }
-
-        debug!(
-            "BufferPool initialized: buffer_size={}, initial_capacity={}, max_capacity={}",
-            config.buffer_size, config.initial_capacity, config.max_capacity
-        );
 
         pool
     }

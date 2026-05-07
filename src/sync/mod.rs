@@ -202,7 +202,7 @@ pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
             let max_chunk_size = crate::util::cdc::DEFAULT_MAX_CHUNK_SIZE;
 
             tokio::spawn(async move {
-                info!("Starting background scan of local files for global index...");
+                info!("Background scan started for global index");
                 match scan_and_index_local_files(
                     &data_dir_clone,
                     &index_clone,
@@ -292,7 +292,7 @@ pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 shutdown_notify_http.notified().await;
-                info!("HTTP server starting graceful shutdown");
+                info!("HTTP server graceful shutdown");
             })
             .await
         {
@@ -300,15 +300,14 @@ pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
         }
     });
 
-    info!("Sync started successfully");
-    info!("  - HTTP API: {}", http_bind);
     info!(
-        "  - Web UI: {}",
+        "Sync ready: http={}, web_ui={}",
+        http_bind,
         if config.web_ui { "enabled" } else { "disabled" }
     );
 
     let signal = crate::util::signal::shutdown_signal().await;
-    info!("Received {}, shutting down...", signal);
+    info!("Received {}, shutting down", signal);
 
     shutdown_notify.notify_one();
     let _ = api_handle.await;

@@ -171,26 +171,13 @@ impl SyncScheduler {
         let (shutdown_signal, _) = watch::channel(false);
 
         let adaptive_controller = NetworkAdaptiveController::new(bandwidth_probe);
-        info!("NetworkAdaptiveController initialized");
-
         let size_freezers = Arc::new(DashMap::new());
-        info!(
-            "SizeFreezer registry initialized with {:?} threshold",
-            config.stability_threshold
-        );
-
         let prefetch_manager = PrefetchManager::new();
-        info!("PrefetchManager initialized (100MB cache, 4 prefetch ahead)");
-
         let retry_policy = Arc::new(SmartRetryPolicy);
-        info!("SmartRetryPolicy initialized");
-
         let protocol_selector = ProtocolSelector::new();
-        info!("ProtocolSelector initialized");
 
         let chunk_cache_path = std::path::Path::new(&config.chunk_cache_path);
         let chunk_index = Arc::new(crate::sync::engine::CDCResultCache::new(chunk_cache_path)?);
-        info!("CDCResultCache initialized at: {:?}", chunk_cache_path);
 
         let scheduler = Arc::new(Self {
             job_queue: PriorityQueue::new(),
@@ -225,9 +212,11 @@ impl SyncScheduler {
         });
 
         info!(
-            "SyncScheduler created: max_concurrent_jobs={}, regions={}, components=6",
+            "SyncScheduler created: max_concurrent_jobs={}, regions={}, stability_threshold={:?}, chunk_cache={:?}",
             config.max_concurrent_jobs,
-            config.regions.len()
+            config.regions.len(),
+            config.stability_threshold,
+            chunk_cache_path
         );
 
         Ok(scheduler)
@@ -255,8 +244,6 @@ impl SyncScheduler {
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
-        info!("Starting SyncScheduler...");
-
         if let Err(e) = connection::establish_all_connections(
             &self.config,
             &self.connection_pools,
@@ -286,11 +273,9 @@ impl SyncScheduler {
 
             cache_builder.start().await;
             *self.cache_builder.lock().await = Some(cache_builder);
-            info!("CacheBuilder started for background CDC and GlobalIndex building");
         }
 
         let worker_count = self.config.max_concurrent_jobs;
-        info!("Starting {} workers...", worker_count);
 
         let mut workers = self.workers.lock().await;
         for worker_id in 0..worker_count {
@@ -306,32 +291,28 @@ impl SyncScheduler {
             scheduler.retry_scheduler_loop().await;
         });
         *self.retry_scheduler.lock().await = Some(retry_handle);
-        info!("Retry scheduler started");
 
         let scheduler = Arc::clone(self);
         let delayed_handle = tokio::spawn(async move {
             scheduler.delayed_scheduler_loop().await;
         });
         *self.delayed_scheduler.lock().await = Some(delayed_handle);
-        info!("Delayed scheduler started for sync jobs");
 
-        use crate::core::constants::{FILE_CACHE_MAX_ENTRIES, FILE_CACHE_TTL_SECS};
         let scheduler = Arc::clone(self);
         let cache_handle = tokio::spawn(async move {
             scheduler.cache_cleaner_loop().await;
         });
         *self.cache_cleaner.lock().await = Some(cache_handle);
-        info!(
-            "Cache cleaner started (max_entries={}, ttl={}s)",
-            FILE_CACHE_MAX_ENTRIES, FILE_CACHE_TTL_SECS
-        );
 
-        info!("SyncScheduler started successfully");
+        info!(
+            "SyncScheduler started: workers={}, retry+delayed+cache_cleaner running",
+            worker_count
+        );
         Ok(())
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        info!("Shutting down SyncScheduler...");
+        info!("SyncScheduler shutting down");
 
         self.shutdown.store(true, Ordering::Relaxed);
         self.shutdown_signal.send_replace(true);
@@ -372,18 +353,16 @@ impl SyncScheduler {
 
         self.transfer_manager_pool.shutdown().await;
 
-        info!("SyncScheduler shut down successfully");
+        info!("SyncScheduler shut down");
         Ok(())
     }
 
     pub(super) async fn delayed_scheduler_loop(&self) {
-        info!("Delayed scheduler loop started");
         let check_interval = std::time::Duration::from_millis(100);
         let mut shutdown_rx = self.shutdown_signal.subscribe();
 
         loop {
             if self.shutdown.load(Ordering::Relaxed) || *shutdown_rx.borrow() {
-                info!("Delayed scheduler received shutdown signal");
                 break;
             }
 
@@ -402,14 +381,11 @@ impl SyncScheduler {
                 _ = tokio::time::sleep(check_interval) => {}
                 changed = shutdown_rx.changed() => {
                     if changed.is_err() || *shutdown_rx.borrow() {
-                        info!("Delayed scheduler wake-up received shutdown signal");
                         break;
                     }
                 }
             }
         }
-
-        info!("Delayed scheduler loop stopped");
     }
 
     pub(in crate::sync::engine::scheduler) async fn enqueue_job_replacing_queued(
@@ -512,14 +488,8 @@ impl SyncScheduler {
         let max_entries = FILE_CACHE_MAX_ENTRIES;
         let mut shutdown_rx = self.shutdown_signal.subscribe();
 
-        info!(
-            "Cache cleaner loop started: interval={}s, ttl={}s, max_entries={}",
-            FILE_CACHE_CLEANUP_INTERVAL_SECS, ttl_secs, max_entries
-        );
-
         loop {
             if self.shutdown.load(Ordering::Relaxed) || *shutdown_rx.borrow() {
-                info!("Cache cleaner received shutdown signal");
                 break;
             }
 
@@ -527,7 +497,6 @@ impl SyncScheduler {
                 _ = tokio::time::sleep(check_interval) => {}
                 changed = shutdown_rx.changed() => {
                     if changed.is_err() || *shutdown_rx.borrow() {
-                        info!("Cache cleaner wake-up received shutdown signal");
                         break;
                     }
                 }
@@ -536,8 +505,6 @@ impl SyncScheduler {
             self.run_cache_cleanup_cycle(chrono::Utc::now().timestamp(), ttl_secs, max_entries)
                 .await;
         }
-
-        info!("Cache cleaner loop stopped");
     }
 
     async fn run_cache_cleanup_cycle(&self, now: i64, ttl_secs: i64, max_entries: usize) {

@@ -6,7 +6,6 @@ use std::io;
 use std::path::Path;
 use std::sync::OnceLock;
 use tokio::fs;
-use tracing::debug;
 
 static FILE_OPERATOR: OnceLock<FileOperator> = OnceLock::new();
 
@@ -75,11 +74,6 @@ fn read_once_at(file: &File, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
 }
 
 pub async fn read_file_range(path: &str, offset: u64, length: u64) -> Result<Vec<u8>> {
-    debug!(
-        "Reading file: {} (offset: {}, length: {})",
-        path, offset, length
-    );
-
     let path = Path::new(path);
 
     let metadata = fs::metadata(path).await.map_err(|e| {

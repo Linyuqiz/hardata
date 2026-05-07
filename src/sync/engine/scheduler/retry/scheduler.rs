@@ -8,12 +8,10 @@ use super::super::core::SyncScheduler;
 
 impl SyncScheduler {
     pub(in crate::sync::engine::scheduler) async fn retry_scheduler_loop(&self) {
-        info!("Retry scheduler loop started");
         let mut shutdown_rx = self.shutdown_signal.subscribe();
 
         loop {
             if self.shutdown.load(Ordering::Relaxed) || *shutdown_rx.borrow() {
-                info!("Retry scheduler received shutdown signal");
                 break;
             }
 
@@ -25,14 +23,11 @@ impl SyncScheduler {
                 _ = tokio::time::sleep(Duration::from_secs(30)) => {}
                 changed = shutdown_rx.changed() => {
                     if changed.is_err() || *shutdown_rx.borrow() {
-                        info!("Retry scheduler wake-up received shutdown signal");
                         break;
                     }
                 }
             }
         }
-
-        info!("Retry scheduler stopped");
     }
 
     async fn process_pending_retries(&self) -> crate::util::error::Result<()> {

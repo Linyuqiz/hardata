@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthStatus {
@@ -77,8 +77,6 @@ impl HealthChecker {
                     warn!("Health check failed: {}", e);
                 }
             }
-
-            info!("Health checker stopped");
         })
     }
 
@@ -87,7 +85,7 @@ impl HealthChecker {
             match client.ping(conn).await {
                 Ok(rtt_ms) => {
                     self.record_success(Some(rtt_ms));
-                    info!("QUIC health check succeeded, RTT: {}ms", rtt_ms);
+                    debug!("QUIC health check succeeded, RTT: {}ms", rtt_ms);
                     return Ok(());
                 }
                 Err(e) => {
@@ -102,7 +100,7 @@ impl HealthChecker {
             match client.ping().await {
                 Ok(rtt_ms) => {
                     self.record_success(Some(rtt_ms));
-                    info!("TCP health check succeeded, RTT: {}ms", rtt_ms);
+                    debug!("TCP health check succeeded, RTT: {}ms", rtt_ms);
                     return Ok(());
                 }
                 Err(e) => {

@@ -55,7 +55,7 @@ pub async fn establish_all_connections(
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     info!(
-        "Establishing connections for {} regions...",
+        "Establishing connections for {} regions",
         config.regions.len()
     );
 
@@ -85,7 +85,7 @@ pub async fn establish_all_connections(
     }
 
     if failures.is_empty() {
-        info!("All region connections established successfully");
+        info!("All region connections established");
         Ok(())
     } else {
         Err(HarDataError::NetworkError(format!(
@@ -119,9 +119,10 @@ async fn establish_region_connection_with_mode(
 ) -> Result<()> {
     let forced_protocol = get_forced_protocol();
 
-    debug!("Connecting to region '{}'...", region.name);
-    debug!("  QUIC: {}", region.quic_bind);
-    debug!("  TCP: {}", region.tcp_bind);
+    debug!(
+        "Connecting to region '{}': quic={}, tcp={}",
+        region.name, region.quic_bind, region.tcp_bind
+    );
     if let Some(proto) = forced_protocol {
         debug!("  Forced: {}", proto.to_uppercase());
     }
@@ -365,7 +366,7 @@ pub async fn get_connection_with_retry_for_region_with_selector(
             }
             Err(e) => {
                 warn!(
-                    "Region '{}' connection attempt {} failed: {}, trying reconnect...",
+                    "Region '{}' connection attempt {} failed: {}, retrying",
                     region,
                     attempt + 1,
                     e
@@ -415,7 +416,7 @@ async fn try_reconnect_region(
     connection_pool: &Arc<Mutex<ConnectionPool>>,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
-    debug!("Attempting to reconnect to region '{}'...", region.name);
+    debug!("Reconnecting to region '{}'", region.name);
 
     {
         let mut pool = connection_pool.lock().await;

@@ -32,8 +32,6 @@ impl CDCResultCache {
             HarDataError::InvalidConfig(format!("Failed to open chunk cache: {}", e))
         })?;
 
-        info!("CDCResultCache opened at: {:?}", cache_path);
-
         Ok(Self {
             db: Arc::new(db),
             cache_hits: std::sync::atomic::AtomicU64::new(0),
