@@ -40,6 +40,9 @@ config.test.yaml
 sync.log
 agent.log
 
+# CodeGraph index
+/.codegraph/
+
 # macOS system files
 .DS_Store
 
