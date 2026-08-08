@@ -39,7 +39,7 @@ impl<T: Clone> DelayedQueue<T> {
         F: Fn(&T) -> bool,
     {
         let mut items = self.items.lock().await;
-        for (_, tasks) in items.iter_mut() {
+        for tasks in items.values_mut() {
             if let Some(pos) = tasks.iter().position(&predicate) {
                 return Some(tasks.remove(pos));
             }

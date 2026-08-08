@@ -6,6 +6,15 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
+async fn send_error(send: &mut quinn::SendStream, message: &str) -> Result<()> {
+    let response = ISyncMessage::new(
+        MessageType::Error,
+        bytes::Bytes::copy_from_slice(message.as_bytes()),
+    );
+    send.write_all(&response.encode()).await?;
+    Ok(())
+}
+
 pub async fn handle_list_directory(
     send: &mut quinn::SendStream,
     payload_buf: &[u8],
@@ -134,6 +143,12 @@ pub async fn handle_read_block(
     match bincode::deserialize::<crate::core::ReadBlockRequest>(payload_buf) {
         Ok(request) => {
             let items_count = request.items.len();
+            if let Err(error) = crate::agent::server::common::validate_request_item_count(
+                "ReadBlockRequest",
+                items_count,
+            ) {
+                return send_error(send, &error.to_string()).await;
+            }
             debug!("Read block: {} items", items_count);
 
             let mut results = Vec::with_capacity(items_count);
@@ -222,6 +237,12 @@ pub async fn handle_get_strong_hashes(
 ) -> Result<()> {
     match bincode::deserialize::<crate::core::GetStrongHashesRequest>(payload_buf) {
         Ok(request) => {
+            if let Err(error) = crate::agent::server::common::validate_request_item_count(
+                "GetStrongHashesRequest",
+                request.chunks.len(),
+            ) {
+                return send_error(send, &error.to_string()).await;
+            }
             let target_path = match resolve_request_path(data_dir, &request.file_path) {
                 Ok(path) => path,
                 Err(e) => {

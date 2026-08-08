@@ -96,6 +96,25 @@ fn normalize_api_token(token: Option<String>) -> Option<String> {
     })
 }
 
+fn validate_regions(regions: &[RegionConfig]) -> crate::util::error::Result<()> {
+    let mut names = std::collections::HashSet::with_capacity(regions.len());
+    for region in regions {
+        let name = region.name.trim();
+        if name.is_empty() {
+            return Err(crate::util::error::HarDataError::InvalidConfig(
+                "sync.regions contains an empty region name".to_string(),
+            ));
+        }
+        if !names.insert(name) {
+            return Err(crate::util::error::HarDataError::InvalidConfig(format!(
+                "sync.regions contains duplicate region name '{}'",
+                name
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
     use std::sync::Arc;
     use tracing::{error, info};
@@ -158,6 +177,7 @@ pub async fn run_sync(config_path: String) -> crate::util::error::Result<()> {
     } else {
         config.regions.clone()
     };
+    validate_regions(&regions)?;
 
     for region in &regions {
         debug!(
@@ -478,7 +498,10 @@ fn collect_files_recursive<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_is_loopback, collect_files_recursive, normalize_api_token, HarDataConfig};
+    use super::{
+        bind_is_loopback, collect_files_recursive, normalize_api_token, validate_regions,
+        HarDataConfig, RegionConfig,
+    };
     use crate::sync::engine::scheduler::ReplicateMode;
     use std::path::PathBuf;
 
@@ -504,6 +527,19 @@ mod tests {
         assert!(bind_is_loopback("127.0.0.1:8080"));
         assert!(bind_is_loopback("localhost:8080"));
         assert!(!bind_is_loopback("0.0.0.0:8080"));
+    }
+
+    #[test]
+    fn validate_regions_rejects_empty_and_duplicate_names() {
+        let region = |name: &str| RegionConfig {
+            name: name.to_string(),
+            quic_bind: "127.0.0.1:9443".to_string(),
+            tcp_bind: "127.0.0.1:9444".to_string(),
+        };
+
+        assert!(validate_regions(&[region("local")]).is_ok());
+        assert!(validate_regions(&[region(" ")]).is_err());
+        assert!(validate_regions(&[region("local"), region("local")]).is_err());
     }
 
     #[tokio::test]

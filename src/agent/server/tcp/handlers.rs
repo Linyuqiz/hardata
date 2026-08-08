@@ -149,6 +149,15 @@ async fn handle_read_block(
     match bincode::deserialize::<crate::core::ReadBlockRequest>(payload_buf) {
         Ok(request) => {
             let items_count = request.items.len();
+            if let Err(error) = crate::agent::server::common::validate_request_item_count(
+                "ReadBlockRequest",
+                items_count,
+            ) {
+                return ISyncMessage::new(
+                    MessageType::Error,
+                    bytes::Bytes::from(error.to_string()),
+                );
+            }
             debug!("Read block: {} items", items_count);
 
             let mut results = Vec::with_capacity(items_count);
@@ -236,6 +245,15 @@ async fn handle_get_strong_hashes(
 ) -> ISyncMessage {
     match bincode::deserialize::<crate::core::GetStrongHashesRequest>(payload_buf) {
         Ok(request) => {
+            if let Err(error) = crate::agent::server::common::validate_request_item_count(
+                "GetStrongHashesRequest",
+                request.chunks.len(),
+            ) {
+                return ISyncMessage::new(
+                    MessageType::Error,
+                    bytes::Bytes::from(error.to_string()),
+                );
+            }
             let target_path = match resolve_request_path(data_dir, &request.file_path) {
                 Ok(path) => path,
                 Err(e) => {

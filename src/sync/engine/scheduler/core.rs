@@ -112,11 +112,9 @@ impl SyncScheduler {
         };
 
         for region in &config.regions {
-            let quic_host = region.quic_bind.split(':').next().unwrap_or("").to_string();
-            let quic_client = if quic_host.is_empty() || quic_host == "0.0.0.0" {
-                None
-            } else {
-                let server_name = quic_host.clone();
+            let quic_host = connection::quic_server_name(&region.quic_bind);
+            let quic_client = if let Some(quic_host) = quic_host.as_deref() {
+                let server_name = quic_host.to_string();
                 let ca_cert_path = {
                     let safe_name = server_name.replace(':', "-");
                     format!(".hardata/tls/agent-cert-{}.der", safe_name)
@@ -143,10 +141,11 @@ impl SyncScheduler {
                     );
                     None
                 }
+            } else {
+                None
             };
             let has_quic = quic_client.is_some();
-            let tcp_client =
-                build_region_tcp_client(region, SCHEDULER_POOL_SIZE, has_quic)?;
+            let tcp_client = build_region_tcp_client(region, SCHEDULER_POOL_SIZE, has_quic)?;
             let pool = Arc::new(Mutex::new(ConnectionPool::new(quic_client, tcp_client)));
             connection_pools.insert(region.name.clone(), pool);
 
@@ -159,7 +158,7 @@ impl SyncScheduler {
             info!(
                 "Created connection pool and AIMD controller for region '{}': quic={}, tcp={} (pool_size={}), concurrency={}-{}",
                 region.name,
-                if has_quic { quic_host.as_str() } else { "disabled" },
+                if has_quic { quic_host.as_deref().unwrap_or("disabled") } else { "disabled" },
                 region.tcp_bind,
                 SCHEDULER_POOL_SIZE,
                 SCHEDULER_MIN_CONCURRENCY,
@@ -615,6 +614,42 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use tokio::net::UdpSocket;
 
+    static GLOBAL_TLS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct ScopedFileOverride {
+        path: std::path::PathBuf,
+        original: Option<Vec<u8>>,
+    }
+
+    impl ScopedFileOverride {
+        fn replace(path: std::path::PathBuf, contents: &[u8]) -> Self {
+            let original = fs::read(&path).ok();
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, contents).unwrap();
+            Self { path, original }
+        }
+
+        fn remove(path: std::path::PathBuf) -> Self {
+            let original = fs::read(&path).ok();
+            if path.exists() {
+                fs::remove_file(&path).unwrap();
+            }
+            Self { path, original }
+        }
+    }
+
+    impl Drop for ScopedFileOverride {
+        fn drop(&mut self) {
+            if let Some(original) = &self.original {
+                let _ = fs::write(&self.path, original);
+            } else if self.path.exists() {
+                let _ = fs::remove_file(&self.path);
+            }
+        }
+    }
+
     fn create_temp_dir(label: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -646,6 +681,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_succeeds_even_when_initial_region_connection_is_unavailable() {
+        let _tls_guard = GLOBAL_TLS_TEST_LOCK.lock().await;
         let temp_dir = create_temp_dir("offline-start");
         let db_path = format!("sqlite://{}", temp_dir.join("state.db").display());
         let db = Arc::new(Database::new(&db_path).await.unwrap());
@@ -675,6 +711,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_rejects_region_with_invalid_tcp_bind_even_without_quic() {
+        let _tls_guard = GLOBAL_TLS_TEST_LOCK.lock().await;
         let temp_dir = create_temp_dir("invalid-tcp-config");
         let db_path = format!("sqlite://{}", temp_dir.join("state.db").display());
         let db = Arc::new(Database::new(&db_path).await.unwrap());
@@ -702,6 +739,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_times_out_hanging_quic_handshakes_during_initial_connection() {
+        let _tls_guard = GLOBAL_TLS_TEST_LOCK.lock().await;
         let temp_dir = create_temp_dir("offline-start-hanging-quic");
         let db_path = format!("sqlite://{}", temp_dir.join("state.db").display());
         let db = Arc::new(Database::new(&db_path).await.unwrap());
@@ -709,9 +747,9 @@ mod tests {
         let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let quic_port = blackhole.local_addr().unwrap().port();
         let quic_ca_cert_path = write_quic_ca_cert(&temp_dir);
-        let auto_tls_dir = std::path::PathBuf::from(".hardata/tls");
-        std::fs::create_dir_all(&auto_tls_dir).unwrap();
-        std::fs::copy(&quic_ca_cert_path, auto_tls_dir.join("agent-cert-127.0.0.1.der")).unwrap();
+        let auto_cert_path = std::path::PathBuf::from(".hardata/tls/agent-cert-127.0.0.1.der");
+        let quic_ca_cert = fs::read(&quic_ca_cert_path).unwrap();
+        let _cert_override = ScopedFileOverride::replace(auto_cert_path, &quic_ca_cert);
 
         let blackhole_task = tokio::spawn(async move {
             let mut buf = [0u8; 2048];
@@ -752,6 +790,9 @@ mod tests {
 
     #[tokio::test]
     async fn new_allows_missing_quic_ca_cert_when_tcp_is_available() {
+        let _tls_guard = GLOBAL_TLS_TEST_LOCK.lock().await;
+        let auto_cert = std::path::PathBuf::from(".hardata/tls/agent-cert-127.0.0.1.der");
+        let _cert_override = ScopedFileOverride::remove(auto_cert);
         let temp_dir = create_temp_dir("missing-quic-cert");
         let db_path = format!("sqlite://{}", temp_dir.join("state.db").display());
         let db = Arc::new(Database::new(&db_path).await.unwrap());

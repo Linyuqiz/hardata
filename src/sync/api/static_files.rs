@@ -66,29 +66,29 @@ fn asset_missing_is_unavailable(base_dir: &FsPath, relative_path: &FsPath) -> bo
     relative_path.starts_with("assets") && !base_dir.join("assets").exists()
 }
 
-async fn read_asset_from(base_dir: &FsPath, relative_path: &str) -> Result<Vec<u8>, Response> {
+async fn read_asset_from(base_dir: &FsPath, relative_path: &str) -> Result<Vec<u8>, Box<Response>> {
     if !base_dir.exists() {
-        return Err(build_missing_asset_response(relative_path, true));
+        return Err(Box::new(build_missing_asset_response(relative_path, true)));
     }
 
     let Some(relative_path_buf) = resolve_asset_path(relative_path) else {
-        return Err(build_missing_asset_response(relative_path, false));
+        return Err(Box::new(build_missing_asset_response(relative_path, false)));
     };
     let path = base_dir.join(&relative_path_buf);
 
     tokio::fs::read(&path).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             let unavailable = asset_missing_is_unavailable(base_dir, &relative_path_buf);
-            return build_missing_asset_response(relative_path, unavailable);
+            return Box::new(build_missing_asset_response(relative_path, unavailable));
         }
 
-        build_unreadable_asset_response(relative_path)
+        Box::new(build_unreadable_asset_response(relative_path))
     })
 }
 
-fn read_embedded_asset(relative_path: &str) -> Result<Vec<u8>, Response> {
+fn read_embedded_asset(relative_path: &str) -> Result<Vec<u8>, Box<Response>> {
     let Some(normalized) = resolve_asset_path(relative_path) else {
-        return Err(build_missing_asset_response(relative_path, false));
+        return Err(Box::new(build_missing_asset_response(relative_path, false)));
     };
     // rust-embed 使用正斜杠作为 key，PathBuf 在 Windows 上会产生反斜杠
     let normalized_str: String = normalized
@@ -98,10 +98,15 @@ fn read_embedded_asset(relative_path: &str) -> Result<Vec<u8>, Response> {
         .join("/");
     WebAssets::get(&normalized_str)
         .map(|content| content.data.into_owned())
-        .ok_or_else(|| build_missing_asset_response(relative_path, relative_path == "index.html"))
+        .ok_or_else(|| {
+            Box::new(build_missing_asset_response(
+                relative_path,
+                relative_path == "index.html",
+            ))
+        })
 }
 
-async fn read_asset(relative_path: &str) -> Result<Vec<u8>, Response> {
+async fn read_asset(relative_path: &str) -> Result<Vec<u8>, Box<Response>> {
     if let Some(base_dir) = web_dist_override_dir() {
         read_asset_from(&base_dir, relative_path).await
     } else {
@@ -153,7 +158,7 @@ pub async fn serve_index() -> impl IntoResponse {
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
             .body(axum::body::Body::from(ensure_root_base_href(body)))
             .unwrap(),
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 
@@ -189,7 +194,7 @@ pub async fn serve_static(Path(path): Path<String>) -> impl IntoResponse {
                 .body(axum::body::Body::from(body))
                 .unwrap()
         }
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 

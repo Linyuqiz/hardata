@@ -24,8 +24,17 @@ struct CertificateHostnamesMetadata {
     hostnames: Vec<String>,
 }
 
-fn tls_paths(_data_dir: &Path, primary_hostname: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
-    let tls_dir = PathBuf::from(".hardata").join(TLS_DIR_NAME);
+fn tls_paths(data_dir: &Path, primary_hostname: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    #[cfg(not(test))]
+    let tls_dir = {
+        let _ = data_dir;
+        PathBuf::from(".hardata").join(TLS_DIR_NAME)
+    };
+    // Unit tests must not share or mutate process-wide TLS material. In production
+    // the historical working-directory location remains unchanged for sync-agent
+    // certificate discovery compatibility.
+    #[cfg(test)]
+    let tls_dir = data_dir.join(".hardata").join(TLS_DIR_NAME);
     let safe_hostname = primary_hostname.replace(':', "-");
     let cert_path = tls_dir.join(format!("agent-cert-{}.der", safe_hostname));
     let key_path = tls_dir.join(format!("agent-key-{}.der", safe_hostname));
@@ -49,6 +58,14 @@ fn normalize_hostname(hostname: &str) -> Option<String> {
     } else {
         Some(normalized.to_string())
     }
+}
+
+fn primary_certificate_hostname(bind_addr: &str, configured_hostnames: &[String]) -> String {
+    configured_hostnames
+        .first()
+        .and_then(|hostname| normalize_hostname(hostname))
+        .or_else(|| normalize_hostname(bind_addr))
+        .unwrap_or_else(|| "localhost".to_string())
 }
 
 fn strip_host_port(value: &str) -> &str {
@@ -209,16 +226,8 @@ pub fn load_or_generate_self_signed_cert(
     data_dir: &Path,
     configured_hostnames: &[String],
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
-    let primary_hostname = configured_hostnames
-        .first()
-        .map(|s| s.as_str())
-        .unwrap_or_else(|| {
-            bind_addr
-                .split(':')
-                .next()
-                .unwrap_or("localhost")
-        });
-    let (tls_dir, cert_path, key_path, hostnames_path) = tls_paths(data_dir, primary_hostname);
+    let primary_hostname = primary_certificate_hostname(bind_addr, configured_hostnames);
+    let (tls_dir, cert_path, key_path, hostnames_path) = tls_paths(data_dir, &primary_hostname);
     fs::create_dir_all(&tls_dir).map_err(HarDataError::Io)?;
     let subject_alt_names = build_certificate_hostnames(bind_addr, configured_hostnames);
     let has_complete_material = cert_path.exists() && key_path.exists();
@@ -307,7 +316,10 @@ pub fn configure_server(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_certificate_hostnames, load_or_generate_self_signed_cert, tls_paths};
+    use super::{
+        build_certificate_hostnames, load_or_generate_self_signed_cert,
+        primary_certificate_hostname, tls_paths,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -355,6 +367,18 @@ mod tests {
     }
 
     #[test]
+    fn primary_certificate_hostname_normalizes_ipv6_bind_and_configured_host() {
+        assert_eq!(
+            primary_certificate_hostname("[2001:db8::1]:9443", &[]),
+            "2001:db8::1"
+        );
+        assert_eq!(
+            primary_certificate_hostname("0.0.0.0:9443", &["[2001:db8::2]:9443".to_string()]),
+            "2001:db8::2"
+        );
+    }
+
+    #[test]
     fn load_or_generate_self_signed_cert_regenerates_when_metadata_hostnames_change() {
         let temp_dir = create_temp_dir("quic-cert-regenerate");
         let configured_hostnames = vec!["old.example.com".to_string()];
@@ -380,18 +404,21 @@ mod tests {
     #[test]
     fn load_or_generate_self_signed_cert_backfills_metadata_without_rotating_when_san_matches() {
         let temp_dir = create_temp_dir("quic-cert-missing-metadata");
-        load_or_generate_self_signed_cert("127.0.0.1:9443", &temp_dir, &[]).unwrap();
+        let configured_hostnames = vec!["backfill.test".to_string()];
+        load_or_generate_self_signed_cert("127.0.0.1:9443", &temp_dir, &configured_hostnames)
+            .unwrap();
 
-        let (_, cert_path, _, hostnames_path) = tls_paths(&temp_dir, "127.0.0.1");
+        let (_, cert_path, _, hostnames_path) = tls_paths(&temp_dir, "backfill.test");
         let original_cert = fs::read(&cert_path).unwrap();
         fs::remove_file(&hostnames_path).unwrap();
 
-        load_or_generate_self_signed_cert("127.0.0.1:9443", &temp_dir, &[]).unwrap();
+        load_or_generate_self_signed_cert("127.0.0.1:9443", &temp_dir, &configured_hostnames)
+            .unwrap();
 
         let reused_cert = fs::read(&cert_path).unwrap();
         let regenerated_metadata = fs::read_to_string(&hostnames_path).unwrap();
         assert_eq!(original_cert, reused_cert);
-        assert!(regenerated_metadata.contains("127.0.0.1"));
+        assert!(regenerated_metadata.contains("backfill.test"));
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -399,15 +426,19 @@ mod tests {
     #[test]
     fn load_or_generate_self_signed_cert_regenerates_when_missing_metadata_and_san_changes() {
         let temp_dir = create_temp_dir("quic-cert-missing-metadata-regenerate");
-        load_or_generate_self_signed_cert("127.0.0.1:9443", &temp_dir, &[]).unwrap();
+        let configured_hostnames = vec!["rotate.test".to_string()];
+        load_or_generate_self_signed_cert("127.0.0.1:9443", &temp_dir, &configured_hostnames)
+            .unwrap();
 
-        let (_, old_cert_path, _, old_hostnames_path) = tls_paths(&temp_dir, "127.0.0.1");
+        let (_, old_cert_path, _, old_hostnames_path) = tls_paths(&temp_dir, "rotate.test");
         let original_cert = fs::read(&old_cert_path).unwrap();
         assert!(!original_cert.is_empty());
+        fs::remove_file(old_hostnames_path).unwrap();
 
-        load_or_generate_self_signed_cert("10.0.0.8:9443", &temp_dir, &[]).unwrap();
+        load_or_generate_self_signed_cert("10.0.0.8:9443", &temp_dir, &configured_hostnames)
+            .unwrap();
 
-        let (_, new_cert_path, _, new_hostnames_path) = tls_paths(&temp_dir, "10.0.0.8");
+        let (_, new_cert_path, _, new_hostnames_path) = tls_paths(&temp_dir, "rotate.test");
         let regenerated_cert = fs::read(&new_cert_path).unwrap();
         let regenerated_metadata = fs::read_to_string(&new_hostnames_path).unwrap();
         assert!(!regenerated_cert.is_empty());

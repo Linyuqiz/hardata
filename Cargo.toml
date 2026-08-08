@@ -41,7 +41,7 @@ dashmap = "6.1.0"
 deadpool = { version = "0.12", features = ["rt_tokio_1"] }
 
 # 数据库（SQLite）
-sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "migrate"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio"] }
 
 # Chunk索引存储（LSM Tree）
 sled = "0.34"

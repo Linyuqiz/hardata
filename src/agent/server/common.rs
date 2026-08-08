@@ -7,6 +7,17 @@ pub const MAX_BLOCK_SIZE: u64 = 100 * 1024 * 1024;
 pub const MAX_CONCURRENT_CONNECTIONS: usize = 1000;
 pub const REQUEST_TIMEOUT_SECS: u64 = 300;
 
+pub fn validate_request_item_count(operation: &str, count: usize) -> Result<()> {
+    let max = crate::core::constants::MAX_ITEMS_PER_REQUEST;
+    if count > max {
+        return Err(HarDataError::InvalidProtocol(format!(
+            "{} item count {} exceeds maximum {}",
+            operation, count, max
+        )));
+    }
+    Ok(())
+}
+
 pub fn compress_block_data(
     target_path: &Path,
     data: Vec<u8>,
@@ -135,7 +146,7 @@ fn canonicalize_request_path(target_path: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_request_path;
+    use super::{resolve_request_path, validate_request_item_count};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -148,6 +159,14 @@ mod tests {
         let path = std::env::temp_dir().join(format!("hardata-{label}-{unique}"));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn validate_request_item_count_enforces_protocol_limit() {
+        let max = crate::core::constants::MAX_ITEMS_PER_REQUEST;
+        validate_request_item_count("read block", max).unwrap();
+        let error = validate_request_item_count("read block", max + 1).unwrap_err();
+        assert!(error.to_string().contains("exceeds maximum"));
     }
 
     #[test]

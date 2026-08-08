@@ -266,10 +266,15 @@ mod tests {
                 .unwrap(),
         );
 
-        let (quic_server, tcp_server) =
-            initialize_agent_servers(&quic_bind, &tcp_bind, compute, root.to_str().unwrap(), &[])
-                .await
-                .unwrap();
+        let (quic_server, tcp_server) = initialize_agent_servers(
+            &quic_bind,
+            &tcp_bind,
+            compute,
+            root.to_str().unwrap(),
+            &["quic-only.test".to_string()],
+        )
+        .await
+        .unwrap();
 
         assert!(quic_server.is_some());
         assert!(tcp_server.is_none());

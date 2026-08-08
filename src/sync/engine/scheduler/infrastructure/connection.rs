@@ -14,6 +14,20 @@ use super::config::{ConnectionPool, SchedulerConfig};
 
 use crate::core::constants::{MAX_RECONNECT_ATTEMPTS, RECONNECT_DELAY_MS, SCHEDULER_POOL_SIZE};
 
+pub(crate) fn quic_server_name(bind: &str) -> Option<String> {
+    if let Ok(address) = bind.parse::<std::net::SocketAddr>() {
+        return (!address.ip().is_unspecified()).then(|| address.ip().to_string());
+    }
+
+    let host = bind
+        .strip_prefix('[')
+        .and_then(|value| value.split_once(']').map(|(host, _)| host))
+        .or_else(|| bind.rsplit_once(':').map(|(host, _)| host))
+        .unwrap_or(bind)
+        .trim();
+    (!host.is_empty() && host != "0.0.0.0" && host != "::").then(|| host.to_string())
+}
+
 fn get_forced_protocol() -> Option<&'static str> {
     std::env::var("HARDATA_PROTOCOL")
         .ok()
@@ -131,8 +145,7 @@ async fn establish_region_connection_with_mode(
         let mut pool = connection_pool.lock().await;
         // 重连时尝试重建 QUIC 客户端（证书可能在初始化后才生成）
         if pool.quic_client.is_none() {
-            let quic_host = region.quic_bind.split(':').next().unwrap_or("").to_string();
-            if !quic_host.is_empty() && quic_host != "0.0.0.0" {
+            if let Some(quic_host) = quic_server_name(&region.quic_bind) {
                 let safe_name = quic_host.replace(':', "-");
                 let ca_cert_path = format!(".hardata/tls/agent-cert-{}.der", safe_name);
                 if std::path::Path::new(&ca_cert_path).exists() {
@@ -433,4 +446,24 @@ async fn try_reconnect_region(
 
     info!("Region '{}' reconnection successful", region.name);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quic_server_name;
+
+    #[test]
+    fn quic_server_name_supports_ipv4_ipv6_and_dns_binds() {
+        assert_eq!(
+            quic_server_name("127.0.0.1:9443").as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(quic_server_name("[::1]:9443").as_deref(), Some("::1"));
+        assert_eq!(
+            quic_server_name("agent.example:9443").as_deref(),
+            Some("agent.example")
+        );
+        assert_eq!(quic_server_name("0.0.0.0:9443"), None);
+        assert_eq!(quic_server_name("[::]:9443"), None);
+    }
 }

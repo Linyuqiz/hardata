@@ -84,18 +84,36 @@ fn ensure_web_assets_ready(out_dir: &Path) {
     );
 }
 
-fn prepare_web_assets(manifest_dir: &Path, out_dir: &Path) {
+fn prepare_web_assets(manifest_dir: &Path, out_dir: &Path, profile: &str) {
     let dist_dir = manifest_dir.join("web/dist");
     let dx_public_dir = manifest_dir.join("web/target/dx/hardata-web/release/web/public");
-    let source_dir =
-        first_existing_dir(&[dist_dir.clone(), dx_public_dir.clone()]).unwrap_or_else(|| {
-            panic!(
-                "Web UI assets not found. Expected '{}' or '{}'. {}",
-                dist_dir.display(),
-                dx_public_dir.display(),
-                WEB_BUILD_HINT
+    let source_dir = first_existing_dir(&[dist_dir.clone(), dx_public_dir.clone()]);
+
+    let Some(source_dir) = source_dir else {
+        if profile != "release" {
+            // rust-embed requires its source directory to contain at least one file.
+            // Keep ordinary development builds and tests independent from the optional
+            // Dioxus toolchain; requests for the absent index still produce the existing
+            // 503 response at runtime.
+            fs::write(
+                out_dir.join("web-ui-unavailable.txt"),
+                "Web UI assets were not built for this development binary.\n",
             )
-        });
+            .expect("failed to create Web UI development placeholder");
+            println!(
+                "cargo:warning=Web UI assets not found; building without embedded UI. {}",
+                WEB_BUILD_HINT
+            );
+            return;
+        }
+
+        panic!(
+            "Web UI assets not found. Expected '{}' or '{}'. {}",
+            dist_dir.display(),
+            dx_public_dir.display(),
+            WEB_BUILD_HINT
+        )
+    };
 
     copy_dir_all(&source_dir, out_dir).unwrap_or_else(|error| {
         panic!(
@@ -128,12 +146,17 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("hardata-web-dist");
 
-    println!("cargo:rerun-if-changed=web");
+    // Watching the whole web tree includes web/target. That made each frontend
+    // compilation invalidate the backend build script again and caused needless
+    // rebuild loops. Only the files that can actually be embedded belong here.
+    println!("cargo:rerun-if-changed=web/dist");
+    println!("cargo:rerun-if-changed=web/assets");
 
     if out_dir.exists() {
         fs::remove_dir_all(&out_dir).unwrap();
     }
     fs::create_dir_all(&out_dir).unwrap();
 
-    prepare_web_assets(&manifest_dir, &out_dir);
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
+    prepare_web_assets(&manifest_dir, &out_dir, &profile);
 }

@@ -106,11 +106,17 @@ fn build_manifest_output(root: PathBuf) -> Result<String> {
     eprintln!("[diff] Scanning directory: {}", root.display());
     collect_paths(&root, &root, &mut paths)?;
 
-    let file_count = paths.iter().filter(|p| matches!(p.kind, PathKind::File { .. })).count();
-    let total_bytes: u64 = paths.iter().filter_map(|p| match p.kind {
-        PathKind::File { size } => Some(size),
-        _ => None,
-    }).sum();
+    let file_count = paths
+        .iter()
+        .filter(|p| matches!(p.kind, PathKind::File { .. }))
+        .count();
+    let total_bytes: u64 = paths
+        .iter()
+        .filter_map(|p| match p.kind {
+            PathKind::File { size } => Some(size),
+            _ => None,
+        })
+        .sum();
     eprintln!(
         "[diff] Found {} entries ({} files, {})",
         paths.len(),
@@ -155,7 +161,9 @@ fn build_manifest_output(root: PathBuf) -> Result<String> {
                 });
                 processed_files += 1;
                 processed_bytes += size;
-                if processed_files % progress_interval == 0 || processed_files == file_count {
+                if processed_files.is_multiple_of(progress_interval)
+                    || processed_files == file_count
+                {
                     eprintln!(
                         "[diff] Hashing: {}/{} files ({}/{})",
                         processed_files,

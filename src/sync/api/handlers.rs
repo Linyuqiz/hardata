@@ -30,6 +30,17 @@ fn extract_bearer_token(value: &str) -> Option<&str> {
     Some(token)
 }
 
+fn token_matches(provided: &str, expected: &str) -> bool {
+    let provided_hash = blake3::hash(provided.as_bytes());
+    let expected_hash = blake3::hash(expected.as_bytes());
+    provided_hash
+        .as_bytes()
+        .iter()
+        .zip(expected_hash.as_bytes())
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
+}
+
 fn authorize(headers: &HeaderMap, state: &SyncApiState) -> Result<(), (StatusCode, String)> {
     let Some(expected) = &state.api_token else {
         return Ok(());
@@ -51,7 +62,7 @@ fn authorize(headers: &HeaderMap, state: &SyncApiState) -> Result<(), (StatusCod
             "invalid Authorization header".to_string(),
         )
     })?;
-    if token != expected {
+    if !token_matches(token, expected) {
         return Err((StatusCode::UNAUTHORIZED, "invalid api token".to_string()));
     }
 
@@ -1086,6 +1097,13 @@ mod tests {
         assert_eq!(extract_bearer_token("Token secret"), None);
         assert_eq!(extract_bearer_token("Bearer"), None);
         assert_eq!(extract_bearer_token("Bearer secret extra"), None);
+    }
+
+    #[test]
+    fn token_matches_requires_exact_token() {
+        assert!(super::token_matches("secret", "secret"));
+        assert!(!super::token_matches("Secret", "secret"));
+        assert!(!super::token_matches("secret-extra", "secret"));
     }
 
     #[test]
