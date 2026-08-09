@@ -1,0 +1,21 @@
+[package]
+name = "hardata-infra-transport"
+version = "0.1.0"
+edition = "2021"
+authors = ["HarData Team"]
+description = "TCP/QUIC outbound transport adapters"
+license = "Apache-2.0"
+
+[dependencies]
+hardata-protocol.workspace = true
+hardata-shared.workspace = true
+
+anyhow.workspace = true
+bincode.workspace = true
+bytes.workspace = true
+deadpool.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+socket2.workspace = true
+tokio.workspace = true
+tracing.workspace = true

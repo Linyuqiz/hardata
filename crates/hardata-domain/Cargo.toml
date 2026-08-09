@@ -1,0 +1,10 @@
+[package]
+name = "hardata-domain"
+version = "0.1.0"
+edition = "2021"
+description = "HarData domain entities and value objects"
+license = "Apache-2.0"
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true

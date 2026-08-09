@@ -1,0 +1,94 @@
+[package]
+name = "hardata-app"
+version = "0.1.0"
+edition = "2021"
+authors = ["HarData Team"]
+description = "High-performance data transfer service based on Rust and QUIC"
+license = "Apache-2.0"
+
+[dependencies]
+hardata-domain.workspace = true
+hardata-protocol.workspace = true
+hardata-shared.workspace = true
+hardata-infra-transport.workspace = true
+hardata-infra-persistence.workspace = true
+
+# 正则表达式
+regex.workspace = true
+
+# 异步运行时
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+
+# QUIC 传输
+quinn.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
+
+# Socket 配置（TCP 优化）
+socket2.workspace = true
+
+# 并行计算
+rayon.workspace = true
+
+# 无锁数据结构
+crossbeam.workspace = true
+dashmap.workspace = true
+
+# 连接池
+deadpool.workspace = true
+
+# 数据库（SQLite）
+sqlx.workspace = true
+
+# Chunk索引存储（LSM Tree）
+sled.workspace = true
+
+# 序列化
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+bincode.workspace = true
+bytes.workspace = true
+x509-parser.workspace = true
+
+# 哈希算法
+blake3.workspace = true
+xxhash-rust.workspace = true
+hex.workspace = true
+
+# CDC 分块
+fastcdc.workspace = true
+
+# 压缩
+zstd.workspace = true
+lz4.workspace = true
+brotli.workspace = true
+
+# 日志
+tracing.workspace = true
+
+# 错误处理
+anyhow.workspace = true
+thiserror.workspace = true
+
+# 时间处理
+chrono.workspace = true
+
+# UUID 生成
+uuid.workspace = true
+
+# 零拷贝（Linux）
+[target.'cfg(target_os = "linux")'.dependencies]
+nix.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+hardata-infra-agent.workspace = true
+filetime.workspace = true
+tower.workspace = true
+
+[features]
+default = []
+io-uring = ["hardata-shared/io-uring"]  # Linux 优化 I/O 特性（pread/pwrite + sendfile）

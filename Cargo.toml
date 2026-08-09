@@ -1,117 +1,110 @@
-[package]
-name = "hardata"
-version = "0.1.0"
-edition = "2021"
-authors = ["HarData Team"]
-description = "High-performance data transfer service based on Rust and QUIC"
-license = "Apache-2.0"
+[workspace]
+members = [
+    "crates/hardata-domain",
+    "crates/hardata-protocol",
+    "crates/hardata-shared",
+    "crates/hardata-app",
+    "crates/hardata-bin",
+    "crates/hardata-infra-agent",
+    "crates/hardata-infra-http",
+    "crates/hardata-infra-persistence",
+    "crates/hardata-infra-transport",
+    "crates/hardata-tool-cli",
+    "crates/hardata-terminal",
+    "crates/hardata-ui",
+]
+default-members = ["crates/hardata-bin"]
+resolver = "2"
 
-[dependencies]
-# 命令行
-clap = { version = "4.4", features = ["derive", "env"] }
+[workspace.dependencies]
+# Workspace crates
+hardata-domain = { path = "crates/hardata-domain" }
+hardata-protocol = { path = "crates/hardata-protocol" }
+hardata-shared = { path = "crates/hardata-shared" }
+hardata-app = { path = "crates/hardata-app" }
+hardata-infra-agent = { path = "crates/hardata-infra-agent" }
+hardata-infra-http = { path = "crates/hardata-infra-http" }
+hardata-infra-persistence = { path = "crates/hardata-infra-persistence" }
+hardata-infra-transport = { path = "crates/hardata-infra-transport" }
+hardata-tool-cli = { path = "crates/hardata-tool-cli" }
+hardata-terminal = { path = "crates/hardata-terminal" }
 
-# 正则表达式
-regex = "1.10"
-
-# 异步运行时
-tokio = { version = "1.35", features = ["full"] }
-futures = "0.3"
-
-# QUIC 传输
-quinn = "0.11"
-rustls = { version = "0.23", features = ["ring"] }
-rcgen = "0.14.5"  # 自签名证书生成
-
-# HTTP 服务（Axum）
+# Runtime and application
+anyhow = "1.0"
+async-trait = "0.1"
 axum = { version = "0.8.7", features = ["ws", "macros"] }
-tower-http = { version = "0.6.6", features = ["fs", "cors", "trace"] }
-rust-embed = { version = "8.0", features = ["interpolate-folder-path"] }  # 静态文件嵌入
-
-# Socket 配置（TCP 优化）
-socket2 = "0.6"
-
-# 并行计算
-rayon = "1.11"
-
-# 无锁数据结构
+bincode = "1.3"
+blake3 = "1.5"
+brotli = "3.4"
+bytes = "1.5"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.4", features = ["derive", "env"] }
 crossbeam = "0.8"
 dashmap = "6.1.0"
-
-# 连接池
 deadpool = { version = "0.12", features = ["rt_tokio_1"] }
-
-# 数据库（SQLite）
-sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio"] }
-
-# Chunk索引存储（LSM Tree）
-sled = "0.34"
-
-# 序列化
+fastcdc = "3.1"
+filetime = "0.2"
+futures = "0.3"
+hex = "0.4"
+libc = "0.2"
+lz4 = "1.24"
+mimalloc = { version = "0.1", default-features = false }
+nix = { version = "0.30.1", features = ["fs", "zerocopy"] }
+quinn = "0.11"
+rayon = "1.11"
+rcgen = "0.14.5"
+regex = "1.10"
+rust-embed = { version = "8.0", features = ["interpolate-folder-path"] }
+rustls = { version = "0.23", features = ["ring"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"  # YAML 配置文件
-bincode = "1.3"  # 高性能二进制序列化
-bytes = "1.5"
-x509-parser = "0.16"
-
-# 哈希算法
-blake3 = "1.5"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }  # 弱哈希(xxh3_64,超快)
-hex = "0.4"  # 哈希十六进制编码
-
-# CDC 分块
-fastcdc = "3.1"
-
-# 压缩
-zstd = "0.13"     # 通用压缩（平衡速度和压缩比）
-lz4 = "1.24"      # 极速压缩/解压（日志、临时文件）
-brotli = "3.4"    # 高压缩比（JSON、XML、静态资源）
-
-# 日志
+serde_yaml = "0.9"
+sled = "0.34"
+socket2 = "0.6"
+sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio"] }
+thiserror = "2.0.17"
+tokio = { version = "1.35", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6.6", features = ["fs", "cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-
-# 错误处理
-anyhow = "1.0"
-thiserror = "2.0.17"
-
-# 时间处理
-chrono = { version = "0.4", features = ["serde"] }
-
-# UUID 生成
 uuid = { version = "1.6", features = ["v4", "serde"] }
+x509-parser = "0.16"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zstd = "0.13"
 
-# 高性能内存分配器
-mimalloc = { version = "0.1", default-features = false }
-
-# 零拷贝（Linux）
-[target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.30.1", features = ["fs", "zerocopy"] }
-libc = "0.2"
-
-[dev-dependencies]
-filetime = "0.2"
-tower = { version = "0.5", features = ["util"] }
-
-[features]
-default = []
-io-uring = []  # Linux 优化 I/O 特性（pread/pwrite + sendfile）
-
-[[bin]]
-name = "hardata"
-path = "src/main.rs"
+# Web frontend
+# Keep the Rust crate and the checked-in/local `dx` CLI on the same release.
+# Dioxus CLI rejects patch-level mismatches (for example dx 0.7.1 vs crate 0.7.10).
+dioxus = { version = "=0.7.1", features = ["web"] }
+gloo-net = "0.6"
+gloo-timers = { version = "0.3", features = ["futures"] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "HtmlElement",
+    "EventSource",
+    "MessageEvent",
+    "Storage",
+] }
 
 [profile.release]
-opt-level = 3           # 最高优化级别
-lto = "fat"             # 完整 LTO（最激进的链接时优化）
-codegen-units = 1       # 单代码生成单元（最大化跨模块优化）
-strip = true            # 移除调试符号（减小二进制大小）
-panic = 'abort'         # panic 直接终止（避免展开开销）
-overflow-checks = false # 禁用溢出检查（5-10% 性能提升，生产环境慎用）
-incremental = false     # 禁用增量编译（release 模式下不需要）
-debug = false           # 禁用调试信息（减小二进制）
-debug-assertions = false # 禁用调试断言
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+overflow-checks = false
+incremental = false
+debug = false
+debug-assertions = false
 
-# 开发模式优化（加快编译速度，保持一定性能）
 [profile.dev]
-opt-level = 1           # 基本优化（比默认的 0 快，但编译时间可接受）
+opt-level = 1
+
+[profile.release.package.hardata-ui]
+# Keep the generated Dioxus/WASM resources intact in release builds.
+strip = false

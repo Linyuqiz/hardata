@@ -1,0 +1,16 @@
+[package]
+name = "hardata-bin"
+version = "0.1.0"
+edition = "2021"
+authors = ["HarData Team"]
+description = "HarData service composition root and command-line binary"
+license = "Apache-2.0"
+
+[dependencies]
+hardata-terminal.workspace = true
+tokio.workspace = true
+mimalloc.workspace = true
+
+[[bin]]
+name = "hardata"
+path = "src/main.rs"

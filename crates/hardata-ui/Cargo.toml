@@ -1,0 +1,15 @@
+[package]
+name = "hardata-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dioxus.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys.workspace = true
+gloo-timers.workspace = true
+gloo-net.workspace = true
+js-sys.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "hardata-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "HarData wire protocol types and framing"
+license = "Apache-2.0"
+
+[dependencies]
+bytes.workspace = true
+hardata-shared.workspace = true
+serde.workspace = true

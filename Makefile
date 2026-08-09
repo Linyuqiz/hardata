@@ -31,43 +31,56 @@ build-macos-optimized:
 	@echo "构建完成: ./target/release/hardata"
 
 # 前端构建
-build-web:
+build-ui:
 	@echo "前端构建 (Dioxus WASM)..."
-	rm -rf web/dist web/target
-	mkdir -p web/dist
-	cd web && dx build --release
-	cp -r web/target/dx/hardata-web/release/web/public/* web/dist/
-	cp -r web/assets/* web/dist/assets/ 2>/dev/null || true
-	@echo "构建完成: ./web/dist/"
+	rm -rf crates/hardata-ui/dist target/dx/hardata-ui
+	mkdir -p crates/hardata-ui/dist
+	dx build --release --package hardata-ui --locked --debug-symbols false
+	cp -r target/dx/hardata-ui/release/web/public/* crates/hardata-ui/dist/
+	cp -r crates/hardata-ui/assets/* crates/hardata-ui/dist/assets/ 2>/dev/null || true
+	@echo "构建完成: ./crates/hardata-ui/dist/"
+
+# 兼容旧命令；新结构统一称为 UI。
+build-web: build-ui
 
 # 全量构建 (前端 + 后端)
-build-all: build-web build-release
+build-all: build-ui build-release
 	@echo "全量构建完成"
 
 # 全量优化构建 (前端 + 后端 macOS)
-build-all-macos: build-web build-macos-optimized
+build-all-macos: build-ui build-macos-optimized
 	@echo "全量 macOS 优化构建完成"
 
 # 全量优化构建 (前端 + 后端 Linux 本机)
-build-all-linux: build-web build-linux-optimized
+build-all-linux: build-ui build-linux-optimized
 	@echo "全量 Linux 优化构建完成"
 
 # 全量交叉编译 (前端 + macOS → Linux x86_64)
-build-all-linux-cross: build-web build-linux-cross
+build-all-linux-cross: build-ui build-linux-cross
 	@echo "全量 Linux 交叉编译完成: ./target/x86_64-unknown-linux-gnu/release/hardata"
 
 # 清理构建产物
 clean:
 	cargo clean
-	rm -rf web/dist web/target
+	rm -rf crates/hardata-ui/dist
 	@echo "清理完成"
 
 # 本地回环性能基准
 perf-loopback:
 	@echo "执行本地回环性能基准 (TCP + QUIC)..."
-	python3 scripts/perf_loopback.py
+	python3 -m scripts.benchmarks.loopback
 
 # 生产侧补充压测
 perf-stress:
 	@echo "执行小文件与并发补充压测 (TCP + QUIC)..."
-	python3 scripts/perf_stress.py
+	python3 -m scripts.benchmarks.stress
+
+# 全场景数据一致性矩阵
+test-consistency:
+	@echo "执行全场景数据一致性矩阵 (TCP + QUIC)..."
+	python3 -m scripts.consistency.matrix
+
+# 工程脚本公共能力单元测试
+test-scripts:
+	@echo "执行工程脚本单元测试..."
+	python3 -m unittest discover -s scripts/tests -t .

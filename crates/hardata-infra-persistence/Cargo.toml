@@ -1,0 +1,17 @@
+[package]
+name = "hardata-infra-persistence"
+version = "0.1.0"
+edition = "2021"
+authors = ["HarData Team"]
+description = "SQLite persistence adapter"
+license = "Apache-2.0"
+
+[dependencies]
+hardata-domain.workspace = true
+hardata-shared.workspace = true
+
+chrono.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true

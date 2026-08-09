@@ -1,0 +1,32 @@
+[package]
+name = "hardata-shared"
+version = "0.1.0"
+edition = "2021"
+description = "HarData shared infrastructure primitives"
+license = "Apache-2.0"
+
+[features]
+default = []
+io-uring = []
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+brotli.workspace = true
+bytes.workspace = true
+crossbeam.workspace = true
+dashmap.workspace = true
+fastcdc.workspace = true
+lz4.workspace = true
+quinn.workspace = true
+rayon.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+xxhash-rust.workspace = true
+zstd.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix.workspace = true

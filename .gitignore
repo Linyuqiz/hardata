@@ -28,9 +28,10 @@ target
 # Development and test directories
 /.dev/
 /.hardata/
+/crates/*/.hardata/
 /scripts/testdata/
 /scripts/perftest/
-/web/dist/
+/crates/hardata-ui/dist/
 /data
 
 # Project-specific files

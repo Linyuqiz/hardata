@@ -1,0 +1,24 @@
+[package]
+name = "hardata-terminal"
+version = "0.1.0"
+edition = "2021"
+authors = ["HarData Team"]
+description = "HarData terminal commands and runtime bootstrap"
+license = "Apache-2.0"
+
+[dependencies]
+hardata-app.workspace = true
+hardata-infra-agent.workspace = true
+hardata-infra-http.workspace = true
+hardata-infra-persistence.workspace = true
+hardata-tool-cli.workspace = true
+
+axum.workspace = true
+clap.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
